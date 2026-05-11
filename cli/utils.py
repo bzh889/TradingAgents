@@ -174,15 +174,18 @@ def select_openrouter_model() -> str:
     return choice
 
 
-def _prompt_custom_model_id() -> str:
+def _prompt_custom_model_id(hint: str = "") -> str:
     """Prompt user to type a custom model ID."""
+    message = "Enter model ID"
+    if hint:
+        message = f"{message} ({hint})"
     return questionary.text(
-        "Enter model ID:",
+        f"{message}:",
         validate=lambda x: len(x.strip()) > 0 or "Please enter a model ID.",
     ).ask().strip()
 
 
-def _select_model(provider: str, mode: str) -> str:
+def _select_model(provider: str, mode: str, base_url: str | None = None) -> str:
     """Select a model for the given provider and mode (quick/deep)."""
     if provider.lower() == "openrouter":
         return select_openrouter_model()
@@ -214,19 +217,22 @@ def _select_model(provider: str, mode: str) -> str:
         exit(1)
 
     if choice == "custom":
-        return _prompt_custom_model_id()
+        hint = ""
+        if base_url and "nvidia.com" in base_url:
+            hint = "NVIDIA NIM uses full IDs, e.g. deepseek-ai/deepseek-v4-pro"
+        return _prompt_custom_model_id(hint=hint)
 
     return choice
 
 
-def select_shallow_thinking_agent(provider) -> str:
+def select_shallow_thinking_agent(provider, base_url: str | None = None) -> str:
     """Select shallow thinking llm engine using an interactive selection."""
-    return _select_model(provider, "quick")
+    return _select_model(provider, "quick", base_url=base_url)
 
 
-def select_deep_thinking_agent(provider) -> str:
+def select_deep_thinking_agent(provider, base_url: str | None = None) -> str:
     """Select deep thinking llm engine using an interactive selection."""
-    return _select_model(provider, "deep")
+    return _select_model(provider, "deep", base_url=base_url)
 
 def select_llm_provider() -> tuple[str, str | None]:
     """Select the LLM provider and its API endpoint."""
@@ -237,6 +243,13 @@ def select_llm_provider() -> tuple[str, str | None]:
         ("Anthropic", "anthropic", "https://api.anthropic.com/"),
         ("xAI", "xai", "https://api.x.ai/v1"),
         ("DeepSeek", "deepseek", "https://api.deepseek.com"),
+        # NVIDIA NIM exposes deepseek-v4 (and many other open models) at an
+        # OpenAI-compatible endpoint with a free tier. Reuse the deepseek
+        # provider_key so DeepSeekChatOpenAI's thinking-mode round-trip
+        # kicks in; put the NVIDIA nvapi-* key in DEEPSEEK_API_KEY and
+        # pick "Custom model ID" to type the NIM model id
+        # (e.g. deepseek-ai/deepseek-v4-pro).
+        ("NVIDIA NIM (DeepSeek-V4 free tier)", "deepseek", "https://integrate.api.nvidia.com/v1"),
         ("Qwen", "qwen", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
         ("GLM", "glm", "https://open.bigmodel.cn/api/paas/v4/"),
         ("OpenRouter", "openrouter", "https://openrouter.ai/api/v1"),
