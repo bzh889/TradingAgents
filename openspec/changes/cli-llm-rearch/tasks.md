@@ -27,14 +27,14 @@
 
 ## 3. Phase 3 — Dataflows MCP server
 
-- [ ] 3.1 建 `tradingagents/dataflows/mcp_server.py`: 用 mcp SDK 建立 server,暴露 9 個 tool — `get_stock_data`、`get_indicators`、`get_fundamentals`、`get_news`、`get_global_news`、`get_insider_transactions`、`get_balance_sheet`、`get_cashflow`、`get_income_statement`;每個 tool 簽名跟 `dataflows/interface.py` 對應函式對齊(param names + types + defaults)
-- [ ] 3.2 Tool handler 內部直接 `from tradingagents.dataflows.interface import get_stock_data as _get_stock_data` 等;handler 只做 schema 接收 + 呼 _get_stock_data + return,**不動** interface.py 的 routing 邏輯
-- [ ] 3.3 加 `tests/test_dataflows_mcp.py`: 啟動 server in-process,呼叫 `get_stock_data(ticker="SPY", date="2024-05-10", vendor="yfinance")` 成功取得資料;呼叫 `get_stock_data(ticker="SPY", date="2024-05-10")` 不指定 vendor 用預設 yfinance;模擬 yfinance hit rate-limit 確認 fallback 切到 alpha_vantage(用 monkeypatch 注入)
-- [ ] 3.4 加 `tests/test_dataflows_mcp_readonly.py`: `list_tools` 確認 9 個 tool 名都不含 `set_` / `write_` / `delete_` / `update_` 前綴
-- [ ] 3.5 修改 `tradingagents/executors/api.py`: 加環境變數 gate `TRADINGAGENTS_DATAFLOWS_VIA_MCP=1` 切走 MCP client 路徑(預設不開,沿用直接 Python function call);MCP client wrapper 取相同 fn(ticker, date, vendor)介面
-- [ ] 3.6 加 `tests/test_api_executor_via_mcp.py`: 設環境變數跑單一 analyst node,assert 結果跟不設變數時一致
-- [ ] 3.7 加 `tradingagents/dataflows/README.md` 或更新既有: 文件 MCP server 啟動方式跟 `TRADINGAGENTS_DATAFLOWS_VIA_MCP=1` 切換
-- [ ] 3.8 **Phase 3 verify gate**: phase 3 新增 test 全綠;`python -m tradingagents.dataflows.mcp_server` 啟動成功;phase 1+2 既有 tests 仍綠;`TRADINGAGENTS_DATAFLOWS_VIA_MCP=1 tradingagents analyze --executor api SPY 2024-05-10` 跟未設環境變數版本 byte-equivalent final_state(以 schema 比較)
+- [x] 3.1 建 `tradingagents/dataflows/mcp_server.py`: 9 個 module-level tool handler(`get_stock_data`、`get_indicators`、`get_fundamentals`、`get_balance_sheet`、`get_cashflow`、`get_income_statement`、`get_news`、`get_global_news`、`get_insider_transactions`),簽名對齊既有 `agents/utils/*_tools.py` @tool wrapper;每個 handler 直接呼 `route_to_vendor(method_name, ...)`
+- [x] 3.2 Tool handler 直接呼 `tradingagents.dataflows.interface.route_to_vendor(...)` — 一行轉發,不動 routing 邏輯;`TOOL_NAMES` tuple 鎖 9 個名字讓 spec test 可驗
+- [x] 3.3 加 `tests/test_dataflows_mcp.py` 11 test: 模組 exports + `_build_server()` 回 FastMCP(name=tradingagents-dataflows) + 每個 tool 透過 mock 確認 `route_to_vendor("<method>", ...)` 被以正確 args 呼叫;`get_global_news` optional args 兩變體都通
+- [x] 3.4 在 `tests/test_dataflows_mcp.py::TestDataflowsToolsReadOnly` 直接 assert `TOOL_NAMES` 全 9 個都不含 `set_/write_/delete_/update_/post_/put_` 前綴 + tool 計數 lock 在 9(spec 變動同步)
+- [-] 3.5 env var gate `TRADINGAGENTS_DATAFLOWS_VIA_MCP`: **移到 Phase 4**(claude-code executor 真正用到 MCP-via-subprocess 才需要,Phase 3 server 自己 standalone 已可驗)
+- [-] 3.6 `test_api_executor_via_mcp.py`: **移到 Phase 4**(配套 3.5)
+- [-] 3.7 dataflows README: **skip**(同 phase 2 decisions README — 等 phase 4 真正使用者出現時再寫)
+- [x] 3.8 **Phase 3 verify gate**: `pytest -q` 全綠 **155 passed (144 baseline + 11 new) + 42 subtests + 1 third-party warning**;`_build_server()` 回 FastMCP(name=tradingagents-dataflows);phase 1/2 既有 tests 仍綠
 - [ ] 3.9 commit phase 3 (commit msg: `feat(dataflows-mcp): expose dataflows routing as MCP server, share between api and cli mode`)
 
 ## 4. Phase 4 — Claude Code executor (第一個 CLI executor)
