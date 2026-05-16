@@ -16,6 +16,73 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
+
+from .types import ExecutorError
+
+
+def raise_if_no_structured_output(
+    stdout_text: str,
+    stderr_text: str,
+    executor_name: str,
+    node_name: str,
+    terminal_event: dict,
+    submit_calls: list,
+) -> None:
+    """If the parser found NOTHING usable in stdout, surface stdout+stderr.
+
+    Dogfood found that CLI tools sometimes print human-readable error
+    messages (auth prompts, trust-directory rejections) on stdout / stderr
+    as PLAIN TEXT, not JSON. The per-line json.loads in the parser silently
+    skips them, leaving terminal_event empty — the executor would otherwise
+    return NodeResult(state_delta={"market_report": ""}) and hide the real
+    failure. This helper surfaces the failure.
+
+    Call AFTER terminal_event extraction; only raises when EVERY structured
+    channel (terminal_event with usable result, submit_calls) is empty.
+    """
+    has_result = bool(terminal_event.get("result"))
+    has_submit = bool(submit_calls)
+    if has_result or has_submit:
+        return
+
+    combined = "\n".join(s for s in (stdout_text.strip(), stderr_text.strip()) if s)
+    if not combined:
+        return  # Both empty — let the caller's NodeResult be empty (rare).
+
+    raise ExecutorError(
+        reason=categorise_failure(combined),
+        node=node_name,
+        raw_error=(
+            f"{executor_name} subprocess produced no structured output. "
+            f"stdout/stderr: {combined[:500]}"
+        ),
+    )
+
+
+def resolve_cli_binary(name: str, executor_name: str) -> str:
+    """Resolve a CLI command name to a full executable path.
+
+    Windows-safe: npm-installed CLIs ship as `<name>` (POSIX shell script)
+    + `<name>.cmd` + `<name>.ps1`. Python's subprocess.Popen with shell=False
+    does NOT traverse PATHEXT on Windows, so `subprocess.Popen(["codex", ...])`
+    raises FileNotFoundError even when `codex.cmd` is on PATH. shutil.which()
+    DOES traverse PATHEXT and picks the first executable variant.
+
+    Raises ExecutorError(reason="cli_not_found") if the binary cannot be found.
+    """
+    resolved = shutil.which(name)
+    if resolved is None:
+        raise ExecutorError(
+            reason="cli_not_found",
+            node="",
+            raw_error=(
+                f"{executor_name} executor requires '{name}' in PATH. "
+                f"Tried shutil.which('{name}') and got None. "
+                f"Install the CLI or fix PATH and retry."
+            ),
+        )
+    return resolved
 
 
 def utf8_env() -> dict[str, str]:

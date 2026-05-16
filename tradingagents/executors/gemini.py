@@ -29,6 +29,8 @@ from ._subprocess_common import (
     AGENT_TO_STATE_KEY,
     SUBMIT_TOOL_TO_STATE_KEY,
     categorise_failure,
+    raise_if_no_structured_output,
+    resolve_cli_binary,
     utf8_env,
 )
 from .types import ExecutorError, NodeResult, NodeSpec
@@ -218,6 +220,11 @@ class GeminiExecutor:
                 raw_error=result_text,
             )
 
+        # Defensive: surface auth/setup errors that the CLI prints as plain text.
+        raise_if_no_structured_output(
+            stdout_text, stderr_text, "gemini", node_name, terminal, submit_calls
+        )
+
         structured_delta = _structured_state_delta(submit_calls)
         if structured_delta is not None:
             return NodeResult(
@@ -245,7 +252,8 @@ class GeminiExecutor:
         )
 
     def _build_argv(self, prompt: str) -> list[str]:
-        argv = ["gemini", "-p", prompt, "-o", "stream-json", "-y", "--skip-trust"]
+        binary = resolve_cli_binary("gemini", executor_name="gemini")
+        argv = [binary, "-p", prompt, "-o", "stream-json", "-y", "--skip-trust"]
         if self.model:
             argv.extend(["-m", self.model])
         if self.allowed_mcp_servers:

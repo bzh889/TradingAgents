@@ -37,6 +37,7 @@ import subprocess
 import tempfile
 from typing import Any, Optional
 
+from ._subprocess_common import raise_if_no_structured_output, resolve_cli_binary
 from .types import ExecutorError, NodeResult, NodeSpec
 
 
@@ -250,6 +251,12 @@ class ClaudeCodeExecutor:
 
         tool_calls, result_event = _parse_stream(stdout_text)
 
+        # Defensive: if claude printed a plain-text error (e.g. argv mismatch)
+        # before any JSON event, surface it.
+        raise_if_no_structured_output(
+            stdout_text, stderr_text, "claude-code", node_name, result_event, tool_calls
+        )
+
         # Failure detection: exit code is unreliable; check is_error from JSON.
         if result_event.get("is_error"):
             result_text = result_event.get("result", "")
@@ -290,13 +297,18 @@ class ClaudeCodeExecutor:
         )
 
     def _build_argv(self, prompt: str) -> list[str]:
+        # `stream-json` output format requires `--verbose` per Claude Code 2.1.x
+        # ("When using --print, --output-format=stream-json requires --verbose").
+        # The verbose flag toggles per-event JSON emission; without it the
+        # subprocess errors out and exits 0 with no parsed events.
+        binary = resolve_cli_binary("claude", executor_name="claude-code")
         argv = [
-            "claude",
+            binary,
             "--print",
             "--output-format",
             "stream-json",
+            "--verbose",
             "--no-session-persistence",
-            "--include-partial-messages",
         ]
         if self.mcp_config:
             argv.extend(["--mcp-config", self.mcp_config, "--strict-mcp-config"])

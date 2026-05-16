@@ -6,6 +6,7 @@ verification (defer to user-driven runs that consume subscription quota).
 """
 
 import json
+import os
 import subprocess
 from unittest.mock import MagicMock, patch
 
@@ -63,7 +64,9 @@ class TestCodexExecutorArgvAndEnv:
             CodexExecutor().run_node("trader", {}, NodeSpec(agent_role="trader"))
 
             argv = mock_popen.call_args.args[0]
-            assert argv[0] == "codex"
+            # On Windows the npm-installed codex resolves to codex.CMD;
+            # on Linux/macOS it's the bash script with no extension.
+            assert os.path.basename(argv[0]).lower().startswith("codex"), argv[0]
             assert "exec" in argv
             assert "--json" in argv
             i = argv.index("-s")
@@ -206,7 +209,7 @@ class TestGeminiExecutorArgvAndEnv:
                 "market_analyst", {}, NodeSpec(agent_role="market_analyst")
             )
             argv = mock_popen.call_args.args[0]
-            assert argv[0] == "gemini"
+            assert os.path.basename(argv[0]).lower().startswith("gemini"), argv[0]
             assert "-p" in argv
             assert "-o" in argv
             i = argv.index("-o")

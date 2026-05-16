@@ -29,6 +29,8 @@ from ._subprocess_common import (
     AGENT_TO_STATE_KEY,
     SUBMIT_TOOL_TO_STATE_KEY,
     categorise_failure,
+    raise_if_no_structured_output,
+    resolve_cli_binary,
     utf8_env,
 )
 from .types import ExecutorError, NodeResult, NodeSpec
@@ -189,6 +191,13 @@ class CodexExecutor:
                 raw_error=result_text,
             )
 
+        # Defensive: if parser saw NOTHING usable but stdout/stderr have text,
+        # the CLI likely emitted a human-readable error (auth, trust, etc.)
+        # that did not surface as a parseable JSON event. Surface it.
+        raise_if_no_structured_output(
+            stdout_text, stderr_text, "codex", node_name, terminal, submit_calls
+        )
+
         structured_delta = _structured_state_delta(submit_calls)
         if structured_delta is not None:
             return NodeResult(
@@ -216,12 +225,18 @@ class CodexExecutor:
         )
 
     def _build_argv(self, prompt: str) -> list[str]:
+        binary = resolve_cli_binary("codex", executor_name="codex")
+        # --skip-git-repo-check: Codex refuses to run in non-git directories
+        # by default. Each node spawns from a fresh tempfile.TemporaryDirectory()
+        # which is never a git repo. Without this flag the subprocess exits
+        # with "Not inside a trusted directory" and no JSON events.
         argv = [
-            "codex",
+            binary,
             "exec",
             "--json",
             "-s",
             "read-only",
+            "--skip-git-repo-check",
             "-c",
             f'model_reasoning_effort="{self.reasoning_effort}"',
         ]
