@@ -143,6 +143,25 @@ def _build_server():
         handler = globals()[tool_name]
         server.tool(name=tool_name)(handler)
 
+    # Background pre-warm: the FIRST call to route_to_vendor triggers a ~28s
+    # cold import of pandas + yfinance + alpha_vantage. Claude Code spawns
+    # this MCP server per LLM-node invocation; if we let the cold import
+    # happen on the first tool call, every node pays the cost. Kick off the
+    # import in a daemon thread now — by the time claude has finished its
+    # initial reasoning and decided to call a tool (~5-10s), the import is
+    # done and the first tool call is fast.
+    import threading
+
+    def _prewarm():
+        try:
+            from tradingagents.dataflows import interface  # noqa: F401
+        except Exception:  # noqa: BLE001
+            # Pre-warm failure is non-fatal — the lazy proxy will retry on
+            # the first real tool call and surface any real error there.
+            pass
+
+    threading.Thread(target=_prewarm, daemon=True).start()
+
     return server
 
 

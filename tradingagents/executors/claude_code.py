@@ -264,7 +264,14 @@ class ClaudeCodeExecutor:
             )
 
             try:
-                stdout_bytes, stderr_bytes = proc.communicate(timeout=self.timeout_seconds)
+                # Prompt is fed via stdin so `--allowedTools <tools...>`'s
+                # variadic flag does not gobble the prompt as another tool
+                # name. claude --print reads the prompt body from stdin when
+                # no positional prompt is on argv.
+                stdout_bytes, stderr_bytes = proc.communicate(
+                    input=prompt.encode("utf-8", errors="replace"),
+                    timeout=self.timeout_seconds,
+                )
             except subprocess.TimeoutExpired:
                 proc.kill()
                 raise ExecutorError(
@@ -359,5 +366,7 @@ class ClaudeCodeExecutor:
                 ",".join(_MCP_ALLOWED_TOOLS),
             ])
         argv.extend(self.extra_args)
-        argv.append(prompt)
+        # Do NOT append prompt as a positional argument. The prompt is fed via
+        # stdin from run_node() so --allowedTools' variadic list does not
+        # consume it as another tool name.
         return argv
