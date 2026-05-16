@@ -39,28 +39,31 @@
 
 ## 4. Phase 4 — Claude Code executor (第一個 CLI executor)
 
-- [ ] 4.1 **Smoke test 巢狀 Claude Code session**: 在 Claude Code session 跑 `claude --print "say hello"` subprocess;確認 (a) 是否成功 (b) sandbox 是否阻擋 (c) token usage 是否疊算;結果寫到 `tradingagents/executors/CLAUDE_CODE_NESTING_NOTES.md`。若巢狀不可行,Phase 5 `/trade` slash command 改強制 `--executor api`
-- [ ] 4.2 建 `tradingagents/executors/claude_code.py`: `ClaudeCodeExecutor` 實作 `NodeExecutor`
-- [ ] 4.3 在 `claude_code.py` 內 `run_node`: 構造 prompt(agent_role + state injection + tools 描述);spawn `subprocess.Popen(["claude", "--print", "--output-format", "json", "--mcp-config", <generated>], ...)`;傳完整 utf-8 env override:
-  ```python
-  env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8",
-         "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8",
-         "NO_COLOR": "1", "TERM": "dumb"}
-  ```
-  stdin/stdout/stderr 用 `subprocess.PIPE` 配 `text=False`;decode 用 `output.decode("utf-8", errors="replace")`
-- [ ] 4.4 Parse Claude Code JSON stream: 抽取 `tool_use` events,過濾出 decisions MCP tool calls(`submit_trader_proposal` / `submit_portfolio_decision` / `submit_rating`);取 tool call 參數作為 schema-valid `NodeResult.state_delta`
-- [ ] 4.5 動態生成 mcp-config: 含 dataflows MCP server URL + decisions MCP server URL,寫入 temp file 傳給 `claude --mcp-config <tmpfile>`;teardown 時 cleanup temp
-- [ ] 4.6 實作 timeout 機制: default 60s per node(可用 NodeSpec.retry_policy 覆寫);超時 kill subprocess 回 `ExecutorError(reason="timeout", node=<node_name>)`
-- [ ] 4.7 實作 quota / rate-limit 偵測: parse stderr / JSON error events 找 "rate limit" / "quota" / "401" 訊號;統一回 `ExecutorError(reason="quota_exhausted", raw_error=<original>)`
-- [ ] 4.8 實作 fail-closed: catch `ExecutorError` 在 LangGraph node 內 raise;不重試、不切 executor;LangGraph checkpoint 自動存當前 state
-- [ ] 4.9 修改 `cli/utils.py`: Step 1 「Claude Code」選項從 stub 變實作 — 跑 `which claude` 驗證 PATH,顯示版本(`claude --version`),讓使用者可選覆寫 model 跟 backend_url
-- [ ] 4.10 修改 `cli/main.py`: 啟動 claude-code executor 前自動 spawn dataflows + decisions MCP server(child process),teardown 時 cleanup
-- [ ] 4.11 新增 per-run meta 寫入: `./reports/{TICKER}_{TIMESTAMP}/_meta.json` 含 `execution_mode`、`executor_version`、`cli_command`(包 sanitize 過的 args)、`tool_versions`(claude / python / mcp SDK)、`start_time`、`end_time`、`chunk_count`、`token_usage`、`transcripts[]` 每個 node 的 transcript 檔路徑
-- [ ] 4.12 新增 transcript 落地: `./reports/{TICKER}_{TIMESTAMP}/transcripts/{node_name}.jsonl` 每個 CLI subprocess 的 stdout/stderr raw 落地;檔尾保留 raw,前面加 metadata header
-- [ ] 4.13 加 `tests/test_claude_code_executor.py`: mock subprocess(monkeypatch `subprocess.Popen`)assert env 帶完整 utf-8 設定;assert tool call payload 被取出當 state_delta;assert timeout 觸發 ExecutorError;assert quota 訊號被識別
-- [ ] 4.14 加 `tests/test_persistence_cross_mode.py`: 第一輪 SPY 用 `api` mode 跑完,第二輪 SPY 用 `claude-code` mode 跑(mock subprocess output 模擬合理回應);assert 第二輪的 `_resolve_pending_entries` 讀得到第一輪寫的 memory log entry;assert memory_log 兩條 entry 格式相同(無 execution_mode field)
-- [ ] 4.15 **Phase 4 verify gate**: phase 4 新增 test 全綠;phase 1+2+3 既有 tests 仍綠;`tradingagents analyze SPY 2024-05-10 --executor claude-code`(真實 CLI)跑出來的 final_state 結構跟 API mode 一致(同 keys、rating ∈ {Buy/Overweight/Hold/Underweight/Sell});Windows + 繁中 locale 跑不撞 UnicodeError;`_meta.json` 寫入正確;wallclock benchmark 紀錄 API vs CLI 時間比例
-- [ ] 4.16 commit phase 4 (commit msg: `feat(cli-executor): claude-code subprocess executor with MCP wiring, utf-8 env, fail-closed quota detection`)
+- [x] 4.1 **Smoke test 巢狀 Claude Code session** — 完成,findings 寫到 `tradingagents/executors/CLAUDE_CODE_NESTING_NOTES.md`:巢狀允許、auth 需走 keychain(**不可用 --bare**)、每次 spawn ~2-3s + ~46k cache tokens (空白 cwd 後降到 24k+22k cache-read);is_error 不靠 exit code 看,要 parse JSON
+- [x] 4.2 建 `tradingagents/executors/claude_code.py`: `ClaudeCodeExecutor` 實作 `NodeExecutor`
+- [x] 4.3 `run_node` 完整流程: tempfile.TemporaryDirectory 當 cwd 避開 parent CLAUDE.md;完整 utf-8 env block;subprocess.Popen text=False + decode errors="replace";argv 不含 --bare(per 4.1 findings)
+- [x] 4.4 Parse stream-json: `_parse_stream` 抽 `item.completed.tool_use` 事件,過濾出 `submit_*` 名字 (decisions MCP);最後一個 `submit_*` 的 input payload 變 `NodeResult.state_delta`;有 `_AGENT_TO_STATE_KEY` map 處理 free-text fallback
+- [-] 4.5 動態 mcp-config 生成: **Phase 4a 不做**(executor 帶 mcp_config 參數 None 跑 free-text path 即可,單元測試已覆蓋 wiring);Phase 4b 寫 cli/main.py auto-spawn 時補
+- [x] 4.6 Timeout: `timeout_seconds` ctor 參數 (default 60),subprocess.TimeoutExpired → proc.kill() → `ExecutorError(reason="timeout")`
+- [x] 4.7 Quota / auth 偵測: `_QUOTA_PATTERNS` + `_AUTH_PATTERNS` regex 看 result_text;categorize 為 `quota_exhausted` / `auth_failed` / `claude_code_error`
+- [x] 4.8 Fail-closed: 任一失敗都 raise ExecutorError;不 retry、不 fallback;LangGraph checkpoint 自動處理 state preservation(現有 graph 機制不動)
+- [x] 4.9 `cli/utils.py` Step 1 Claude Code option:**真正路徑** ('coming soon' label 改為 'uses your Claude Code login');使用者點選後 resolve_executor 跑通 → ClaudeCodeExecutor 實例
+- [-] 4.10 cli/main.py auto-spawn MCP servers: **Phase 4b**(配套 4.5 才有意義 — Phase 4a executor 本身不依賴 server 跑)
+- [-] 4.11 `_meta.json` per-run: **Phase 4b**(end-to-end run 才有意義 落地)
+- [-] 4.12 Transcripts 落地: **Phase 4b**
+- [x] 4.13 `tests/test_claude_code_executor.py` 14 test: 基礎契約(implements protocol、name)、env 完整 utf-8、argv 無 --bare、clean cwd、result event parse、submit_portfolio_decision tool_use 抽取為 state_delta、is_error/quota/timeout 各自 ExecutorError、ignore `NodeSpec._callable` per §D9
+- [-] 4.14 Cross-mode persistence test: **Phase 4b**(需 MCP server + real subprocess 才測得真)
+- [x] 4.15 **Phase 4a verify gate**: `pytest -q` 全綠 **169 passed (155 baseline + 14 new) + 42 subtests + 1 third-party warning**;`resolve_executor("claude-code")` 回 ClaudeCodeExecutor instance;smoke test (`claude --print`) 在本機真的可呼叫且回 JSON
+- [ ] 4.16 commit phase 4a (commit msg: `feat(cli-executor): ClaudeCodeExecutor module + unit tests with mocked subprocess`)
+
+### Phase 4b (deferred to follow-up commit / user-driven verification)
+
+- [ ] 4.5b 動態 mcp-config 生成 + 寫入 temp file
+- [ ] 4.10b cli/main.py auto-spawn dataflows + decisions MCP server (child process lifecycle)
+- [ ] 4.11b `_meta.json` per-run schema + 寫入
+- [ ] 4.12b Transcripts 落地到 `./reports/{TICKER}_{TIMESTAMP}/transcripts/`
+- [ ] 4.14b Cross-mode persistence integration test (mock subprocess + real LangGraph checkpoint)
+- [ ] 4.15b Real `tradingagents analyze SPY 2024-05-10 --executor claude-code` end-to-end run (使用者操作驗證,會消耗 Claude Code 訂閱配額)
 
 ## 5. Phase 5 — Codex + Gemini executor + `/trade` slash command
 

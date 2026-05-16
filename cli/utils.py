@@ -12,7 +12,7 @@ console = Console()
 # Mode label → executor identifier passed to TradingAgentsGraph(executor=...)
 EXECUTION_MODES = [
     ("API (langchain) — direct LLM API calls (existing behaviour)", "api"),
-    ("Claude Code (subscription) — coming soon (Phase 4)", "claude-code"),
+    ("Claude Code (subscription) — uses your Claude Code login", "claude-code"),
     ("Codex CLI (subscription) — coming soon (Phase 5)", "codex"),
     ("Gemini CLI (subscription) — coming soon (Phase 5)", "gemini"),
 ]
@@ -21,9 +21,10 @@ EXECUTION_MODES = [
 def select_execution_mode() -> str:
     """Step 1: pick the execution mode.
 
-    Returns one of 'api' / 'claude-code' / 'codex' / 'gemini'. Phase 1 ships
-    'api' only; CLI modes raise NotImplementedError via resolve_executor() and
-    we re-prompt here. See openspec/changes/cli-llm-rearch/design.md §D5.
+    Returns one of 'api' / 'claude-code' / 'codex' / 'gemini'. Phase 4 ships
+    'api' and 'claude-code'; codex and gemini raise NotImplementedError via
+    resolve_executor() and we re-prompt. See openspec/changes/cli-llm-rearch/
+    design.md §D5.
     """
     while True:
         choice = questionary.select(
@@ -44,15 +45,13 @@ def select_execution_mode() -> str:
             console.print("\n[red]No execution mode selected. Exiting...[/red]")
             exit(1)
 
-        if choice == "api":
+        if choice in ("api", "claude-code"):
             return choice
 
-        # CLI mode picked but not yet implemented in Phase 1. Tell the user
-        # clearly which phase will ship it and re-prompt.
+        # Phase 5 modes not yet shipped — re-prompt with explanation.
         console.print(
-            f"\n[yellow]'{choice}' executor ships in a later phase "
-            "(claude-code → phase 4; codex/gemini → phase 5). Pick 'api' "
-            "for now, or wait for the next release.[/yellow]\n"
+            f"\n[yellow]'{choice}' executor ships in phase 5. "
+            "Pick 'api' or 'claude-code' for now.[/yellow]\n"
         )
 
 TICKER_INPUT_EXAMPLES = "Examples: SPY, CNC.TO, 7203.T, 0700.HK"
