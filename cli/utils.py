@@ -8,6 +8,53 @@ from tradingagents.llm_clients.model_catalog import get_model_options
 
 console = Console()
 
+
+# Mode label → executor identifier passed to TradingAgentsGraph(executor=...)
+EXECUTION_MODES = [
+    ("API (langchain) — direct LLM API calls (existing behaviour)", "api"),
+    ("Claude Code (subscription) — coming soon (Phase 4)", "claude-code"),
+    ("Codex CLI (subscription) — coming soon (Phase 5)", "codex"),
+    ("Gemini CLI (subscription) — coming soon (Phase 5)", "gemini"),
+]
+
+
+def select_execution_mode() -> str:
+    """Step 1: pick the execution mode.
+
+    Returns one of 'api' / 'claude-code' / 'codex' / 'gemini'. Phase 1 ships
+    'api' only; CLI modes raise NotImplementedError via resolve_executor() and
+    we re-prompt here. See openspec/changes/cli-llm-rearch/design.md §D5.
+    """
+    while True:
+        choice = questionary.select(
+            "Step 1: Select execution mode",
+            choices=[
+                questionary.Choice(label, value=value)
+                for label, value in EXECUTION_MODES
+            ],
+            style=questionary.Style(
+                [
+                    ("selected", "fg:green noinherit"),
+                    ("highlighted", "noinherit"),
+                ]
+            ),
+        ).ask()
+
+        if choice is None:
+            console.print("\n[red]No execution mode selected. Exiting...[/red]")
+            exit(1)
+
+        if choice == "api":
+            return choice
+
+        # CLI mode picked but not yet implemented in Phase 1. Tell the user
+        # clearly which phase will ship it and re-prompt.
+        console.print(
+            f"\n[yellow]'{choice}' executor ships in a later phase "
+            "(claude-code → phase 4; codex/gemini → phase 5). Pick 'api' "
+            "for now, or wait for the next release.[/yellow]\n"
+        )
+
 TICKER_INPUT_EXAMPLES = "Examples: SPY, CNC.TO, 7203.T, 0700.HK"
 
 ANALYST_ORDER = [

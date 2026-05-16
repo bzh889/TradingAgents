@@ -25,6 +25,7 @@ from tradingagents.agents.utils.agent_states import (
     RiskDebateState,
 )
 from tradingagents.dataflows.config import set_config
+from tradingagents.executors import NodeExecutor, resolve_executor
 
 # Import the new abstract tool methods from agent_utils
 from tradingagents.agents.utils.agent_utils import (
@@ -56,6 +57,7 @@ class TradingAgentsGraph:
         debug=False,
         config: Dict[str, Any] = None,
         callbacks: Optional[List] = None,
+        executor: "str | NodeExecutor" = "api",
     ):
         """Initialize the trading agents graph and components.
 
@@ -64,10 +66,15 @@ class TradingAgentsGraph:
             debug: Whether to run in debug mode
             config: Configuration dictionary. If None, uses default config
             callbacks: Optional list of callback handlers (e.g., for tracking LLM/tool stats)
+            executor: Either a string name ('api', 'claude-code', 'codex', 'gemini')
+                or a NodeExecutor instance. 'api' (default) preserves the existing
+                langchain path. CLI executors arrive in phase 4 / 5. See
+                openspec/changes/cli-llm-rearch/design.md §D1/§D9.
         """
         self.debug = debug
         self.config = config or DEFAULT_CONFIG
         self.callbacks = callbacks or []
+        self.executor = resolve_executor(executor)
 
         # Update the interface's config
         set_config(self.config)
@@ -114,6 +121,7 @@ class TradingAgentsGraph:
             self.deep_thinking_llm,
             self.tool_nodes,
             self.conditional_logic,
+            executor=self.executor,
         )
 
         self.propagator = Propagator()

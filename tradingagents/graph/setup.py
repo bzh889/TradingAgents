@@ -1,13 +1,39 @@
 # TradingAgents/graph/setup.py
 
-from typing import Any, Dict
+from typing import Any, Callable, Dict, Optional
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
 
 from tradingagents.agents import *
 from tradingagents.agents.utils.agent_states import AgentState
+from tradingagents.executors import APIExecutor, NodeExecutor, NodeSpec
 
 from .conditional_logic import ConditionalLogic
+
+
+def _wrap_node_through_executor(
+    executor: NodeExecutor,
+    node_fn: Callable[[Dict[str, Any]], Dict[str, Any]],
+    agent_role: str,
+) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
+    """Wrap a LangGraph-native node fn so it dispatches through `executor.run_node`.
+
+    For `api` executor, this is a one-extra-call indirection that delegates back to
+    the original `node_fn` via NodeSpec._callable — zero behaviour change vs master.
+    For CLI executors (claude-code / codex / gemini), the wrapped callable still has
+    the same `(state) -> dict` LangGraph signature but the CLI executor ignores
+    `_callable` and builds a subprocess prompt from agent_role + spec metadata.
+
+    See design §D9.
+    """
+    spec = NodeSpec(agent_role=agent_role, _callable=node_fn)
+
+    def wrapped(state: Dict[str, Any]) -> Dict[str, Any]:
+        result = executor.run_node(agent_role, state, spec)
+        return result.state_delta
+
+    wrapped.__name__ = f"{agent_role}_via_{executor.name}"
+    return wrapped
 
 
 class GraphSetup:
@@ -19,12 +45,20 @@ class GraphSetup:
         deep_thinking_llm: Any,
         tool_nodes: Dict[str, ToolNode],
         conditional_logic: ConditionalLogic,
+        executor: Optional[NodeExecutor] = None,
     ):
-        """Initialize with required components."""
+        """Initialize with required components.
+
+        Args:
+            executor: NodeExecutor that dispatches each agent's chat call.
+                Defaults to APIExecutor (existing langchain path). Phase 4/5
+                add CLI-backed executors (claude-code / codex / gemini).
+        """
         self.quick_thinking_llm = quick_thinking_llm
         self.deep_thinking_llm = deep_thinking_llm
         self.tool_nodes = tool_nodes
         self.conditional_logic = conditional_logic
+        self.executor = executor if executor is not None else APIExecutor()
 
     def setup_graph(
         self, selected_analysts=["market", "social", "news", "fundamentals"]
@@ -46,45 +80,51 @@ class GraphSetup:
         delete_nodes = {}
         tool_nodes = {}
 
+        # All create_*(llm) factories return (state) -> dict callables. We wrap
+        # each through `self.executor.run_node` so the executor seam (API vs CLI)
+        # works without touching tradingagents/agents/**. See design §D9.
+        def _wrap(node_fn, agent_role):
+            return _wrap_node_through_executor(self.executor, node_fn, agent_role)
+
         if "market" in selected_analysts:
-            analyst_nodes["market"] = create_market_analyst(
-                self.quick_thinking_llm
+            analyst_nodes["market"] = _wrap(
+                create_market_analyst(self.quick_thinking_llm), "market_analyst"
             )
             delete_nodes["market"] = create_msg_delete()
             tool_nodes["market"] = self.tool_nodes["market"]
 
         if "social" in selected_analysts:
-            analyst_nodes["social"] = create_social_media_analyst(
-                self.quick_thinking_llm
+            analyst_nodes["social"] = _wrap(
+                create_social_media_analyst(self.quick_thinking_llm), "social_media_analyst"
             )
             delete_nodes["social"] = create_msg_delete()
             tool_nodes["social"] = self.tool_nodes["social"]
 
         if "news" in selected_analysts:
-            analyst_nodes["news"] = create_news_analyst(
-                self.quick_thinking_llm
+            analyst_nodes["news"] = _wrap(
+                create_news_analyst(self.quick_thinking_llm), "news_analyst"
             )
             delete_nodes["news"] = create_msg_delete()
             tool_nodes["news"] = self.tool_nodes["news"]
 
         if "fundamentals" in selected_analysts:
-            analyst_nodes["fundamentals"] = create_fundamentals_analyst(
-                self.quick_thinking_llm
+            analyst_nodes["fundamentals"] = _wrap(
+                create_fundamentals_analyst(self.quick_thinking_llm), "fundamentals_analyst"
             )
             delete_nodes["fundamentals"] = create_msg_delete()
             tool_nodes["fundamentals"] = self.tool_nodes["fundamentals"]
 
         # Create researcher and manager nodes
-        bull_researcher_node = create_bull_researcher(self.quick_thinking_llm)
-        bear_researcher_node = create_bear_researcher(self.quick_thinking_llm)
-        research_manager_node = create_research_manager(self.deep_thinking_llm)
-        trader_node = create_trader(self.quick_thinking_llm)
+        bull_researcher_node = _wrap(create_bull_researcher(self.quick_thinking_llm), "bull_researcher")
+        bear_researcher_node = _wrap(create_bear_researcher(self.quick_thinking_llm), "bear_researcher")
+        research_manager_node = _wrap(create_research_manager(self.deep_thinking_llm), "research_manager")
+        trader_node = _wrap(create_trader(self.quick_thinking_llm), "trader")
 
         # Create risk analysis nodes
-        aggressive_analyst = create_aggressive_debator(self.quick_thinking_llm)
-        neutral_analyst = create_neutral_debator(self.quick_thinking_llm)
-        conservative_analyst = create_conservative_debator(self.quick_thinking_llm)
-        portfolio_manager_node = create_portfolio_manager(self.deep_thinking_llm)
+        aggressive_analyst = _wrap(create_aggressive_debator(self.quick_thinking_llm), "aggressive_analyst")
+        neutral_analyst = _wrap(create_neutral_debator(self.quick_thinking_llm), "neutral_analyst")
+        conservative_analyst = _wrap(create_conservative_debator(self.quick_thinking_llm), "conservative_analyst")
+        portfolio_manager_node = _wrap(create_portfolio_manager(self.deep_thinking_llm), "portfolio_manager")
 
         # Create workflow
         workflow = StateGraph(AgentState)

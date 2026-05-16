@@ -64,6 +64,14 @@ CLI executor 失敗時 SHALL NOT 自動 fallback 到其他 executor。propagate 
 - **WHEN** CLI executor 在 node 6 quota_exhausted
 - **THEN** 系統 SHALL NOT 自動用 API executor 重試 node 6;SHALL exit 非零並顯示 resume 指令建議
 
+### Requirement: CLI executor 忽略 `NodeSpec._callable`
+
+CLI executor(claude-code / codex / gemini)SHALL 忽略 `NodeSpec._callable` 欄位。CLI executor 僅 SHALL 使用 `spec.agent_role`、`spec.prompt_template`、`spec.tools`、`spec.schema` 構建 subprocess prompt 與 MCP 連線設定。`_callable` 是 API mode 專用的 implementation shim,任何 CLI executor 引用該欄位皆視為 spec 違規。
+
+#### Scenario: CLI executor 不呼叫 _callable
+- **WHEN** `claude_code_executor.run_node("trader", state, NodeSpec(agent_role="trader", prompt_template="...", _callable=some_fn))`
+- **THEN** subprocess 行為僅依賴 `agent_role / prompt_template / tools / schema`;`some_fn` 完全不被呼叫;NodeResult.state_delta 從 MCP tool call payload(或 JSON parse fallback)取得
+
 ### Requirement: CLI executor 不從 stdout 取結構化輸出
 
 CLI executor SHALL NOT 將人類可讀 stdout 解析為權威 trading decision 來源。需要 schema-valid 輸出(TraderProposal / PortfolioDecision / Rating)時,SHALL 透過 decisions MCP tool call payload 取得。stdout 僅可作為 transcript 留檔。

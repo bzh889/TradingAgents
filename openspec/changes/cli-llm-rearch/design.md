@@ -137,6 +137,40 @@ CLI mode 任一 node 失敗(quota exhausted / timeout / parse / tool):
 
 **Rationale**: Codex 強調 `/trade` 不能有 duplicate orchestration;duplicate 會引起兩條路徑 drift,後期 maintenance 災難。Slash command 只是 entry-point alias。
 
+### D9 — `NodeSpec._callable` dual-purpose container(implementation 期間 refinement)
+
+**起源**: Phase 1 task 1.5 開工讀 `tradingagents/graph/setup.py` 發現現有結構是 `create_*(llm) → callable(state) → state_delta` — agents 函式本身就是 LangGraph 直接接受的 node 形狀。原 design §3.2 寫「`run_node` 就是 `agents/*/` 各 node 程式碼**搬一搬**」與 §2 "tradingagents/agents/ 不動" 衝突。Implementation 期間發現直接 duplicate 邏輯是錯的(drift risk),改為 **option B**: agents 函式當不透明 callable,透過 NodeSpec 傳給 executor。
+
+**Schema**:
+
+```python
+@dataclass
+class NodeSpec:
+    agent_role: str                              # "market_analyst", "bull_researcher", ...
+    prompt_template: str = ""                    # CLI mode 用;API mode 留空
+    tools: list[str] = field(default_factory=list)
+    schema: Optional[type] = None                # Pydantic schema(Trader/PM)
+    retry_policy: dict = field(default_factory=dict)
+    _callable: Optional[Callable[[dict], dict]] = None  # API mode 走這條
+```
+
+**API mode 路徑**: `executor.run_node(node_name, state, spec)` → `APIExecutor` 看 `spec._callable` 不為 None,直接呼 `spec._callable(state)` 拿回 `state_delta` dict。零 agents 修改、零行為變動。
+
+**CLI mode 路徑**: `executor.run_node(node_name, state, spec)` → `ClaudeCodeExecutor` / `CodexExecutor` / `GeminiExecutor` 看 `spec.agent_role + prompt_template + tools + schema` 構建 subprocess prompt;**忽略** `_callable`(該欄位是 API mode 內部 shim,CLI mode 不應依賴)。
+
+**setup.py refactor**: 每個 `create_*(llm)` 回的 callable 改成包一層 — 把它寫成 NodeSpec(`_callable=`)後丟給 `executor.run_node(...)` 並回 `result.state_delta`。LangGraph add_node 加的是這個 wrapped callable。
+
+**Rationale**:
+- 滿足 design §2「`agents/**` 全部不動」承諾
+- API mode 行為跟 master 完全相容(包一層 indirection,測試 byte-equivalent baseline)
+- CLI mode 不依賴 `_callable`,避免「API/CLI 路徑同個 spec field 各自解讀」的 spec 漏抽象
+- `_` 前綴標記為 implementation detail,避免外部依賴
+
+**Spec impact**:
+- `specs/api-executor/spec.md` 新增 requirement 描述 `NodeSpec._callable` 角色 + scenario
+- `specs/cli-executor/spec.md` 已 covered(CLI executor 只取 `agent_role / prompt_template / tools / schema` 構 subprocess),但補一條明確 scenario 說明「ignore _callable」
+- 兩條 spec 之後在 phase 1 task 1.5/1.6 後同 PR commit
+
 ## Risks / Trade-offs
 
 ### R1 (D2 衍生): Per-agent subprocess 啟動延遲 → Mitigation

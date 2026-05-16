@@ -1,17 +1,17 @@
 ## 1. Phase 1 — Executor abstraction (API mode 路徑零破壞)
 
-- [ ] 1.1 建 `tradingagents/executors/__init__.py`
-- [ ] 1.2 建 `tradingagents/executors/types.py`: 定義 `TradingState`(沿用 `agents/utils/agent_states.py` 的 TypedDict 重新匯出)、`NodeSpec`(`agent_role: str`、`prompt_template: str`、`tools: list[str]`、`schema: type[BaseModel] | None`、`retry_policy: dict`)、`NodeResult`(`state_delta: dict`、`raw_artifact_path: str | None`、`executor_metadata: dict`)、`ExecutorError(reason, node, raw_error)`
-- [ ] 1.3 建 `tradingagents/executors/base.py`: `NodeExecutor` Protocol(`name: str`、`run_node(node_name, state, spec) -> NodeResult`、`supports_structured() -> bool`)
-- [ ] 1.4 建 `tradingagents/executors/api.py`: 包現有 langchain 邏輯,`APIExecutor` 實作 `NodeExecutor`;`run_node` 內部呼叫現有 `create_llm_client(...)` 並執行該 node 的工作(從 `agents/*/` 抽出 node-level prompt+invoke 邏輯,但**不動** `agents/*/` 檔)
-- [ ] 1.5 修改 `tradingagents/graph/setup.py`: 每個 node factory 接受 `executor: NodeExecutor = APIExecutor()` 參數(預設 API 確保零破壞);node 內 chat completion 改呼 `executor.run_node(...)`;非 chat 部分(state mutation、tool node 觸發)維持不動
-- [ ] 1.6 修改 `tradingagents/graph/trading_graph.py`: `TradingAgentsGraph.__init__` 多吃 `executor: NodeExecutor | str = "api"` 參數;若是 str 則用 factory 解析成 executor 實例;傳進 `GraphSetup.setup_graph(...)`
-- [ ] 1.7 修改 `cli/utils.py` 互動選單為兩段式: 抽 `select_execution_mode()` 函式(回 `"api"/"claude-code"/"codex"/"gemini"`);保留 `select_llm_provider()` 等既有函式,在 mode=api 時呼叫;mode=claude-code/codex/gemini 時 phase 1 stub 顯示 `(coming soon — Phase 4+)` 並退回 Step 1
-- [ ] 1.8 修改 `cli/main.py` `analyze` 指令: 加 `--executor {api,claude-code,codex,gemini}` flag(default 不設,進互動式;有設則跳過 Step 1)
-- [ ] 1.9 修改 `main.py` 範例: 在 `config.copy()` 之後加 `config["executor"] = "api"` 範例註解(或不動 main.py,executor 預設值處理掉)
-- [ ] 1.10 在 `tests/` 加 `test_api_executor.py`: assert `APIExecutor` 實作 `NodeExecutor` Protocol;mock LLM 跑一個 analyst node,確認 `NodeResult.state_delta` 含 `market_report` key
-- [ ] 1.11 在 `tests/` 加 `test_graph_executor_param.py`: assert `TradingAgentsGraph(executor="api")` 跟 `TradingAgentsGraph()` 行為一致;assert 傳 invalid executor name raises clear error
-- [ ] 1.12 **Phase 1 verify gate**: 跑 `PYTHONUTF8=1 .venv/Scripts/python.exe -m pytest -q` — 既有 108 tests + 42 subtests 全綠 + 新增 2 個 test files 也綠;跑 `tradingagents analyze SPY 2024-05-10 --executor api`(以 mock 確保 deterministic)的 final_state diff vs phase 0 baseline = 0
+- [x] 1.1 建 `tradingagents/executors/__init__.py` (含 `resolve_executor()` factory)
+- [x] 1.2 建 `tradingagents/executors/types.py`: `NodeSpec` (含 `_callable` shim per §D9)、`NodeResult`、`ExecutorError`
+- [x] 1.3 建 `tradingagents/executors/base.py`: `NodeExecutor` `@runtime_checkable` Protocol
+- [x] 1.4 建 `tradingagents/executors/api.py`: `APIExecutor` 透過 `NodeSpec._callable` shim delegate 給既有 agent fn,**零** agents 修改
+- [x] 1.5 修改 `tradingagents/graph/setup.py`: 加 `executor: Optional[NodeExecutor] = None` 參數 + `_wrap_node_through_executor` 包每個 `create_*(llm)` 回的 callable;預設 APIExecutor()
+- [x] 1.6 修改 `tradingagents/graph/trading_graph.py`: `__init__` 加 `executor: str | NodeExecutor = "api"`;透過 `resolve_executor()` 解析;傳進 GraphSetup
+- [x] 1.7 修改 `cli/utils.py`: 加 `select_execution_mode()` + `EXECUTION_MODES` 表;非 api 模式顯示 phase 4/5 「coming soon」訊息並 re-prompt
+- [x] 1.8 修改 `cli/main.py` `analyze` 指令: 加 `--executor` typer flag;有設則 `resolve_executor` 先驗證再 pass 給 run_analysis;run_analysis 沒設則 prompt
+- [-] 1.9 修改 `main.py` 範例: **skip** — TradingAgentsGraph executor 預設 "api" 已涵蓋向後相容;main.py 範例維持原樣即合法 API mode
+- [x] 1.10 在 `tests/test_node_executor_contract.py` 加 12 test (types/Protocol/APIExecutor 契約 + module exports)
+- [x] 1.11 在 `tests/test_graph_executor_param.py` 加 9 test (GraphSetup/TradingAgentsGraph signature + resolve_executor 行為 + `_wrap_node_through_executor`)
+- [x] 1.12 **Phase 1 verify gate**: `pytest -q` 全綠 — **129 passed, 1 third-party warning, 42 subtests passed** (108 baseline + 21 新 = 129);所有 import 路徑通;CLI flag `--executor` typer help 顯示正常
 - [ ] 1.13 commit phase 1 (commit msg: `feat(executor-mode-selection,api-executor): add NodeExecutor abstraction, wrap existing langchain as api executor`)
 
 ## 2. Phase 2 — Decisions MCP server

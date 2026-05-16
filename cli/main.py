@@ -928,7 +928,12 @@ def format_tool_args(args, max_length=80) -> str:
         return result[:max_length - 3] + "..."
     return result
 
-def run_analysis(checkpoint: bool = False):
+def run_analysis(checkpoint: bool = False, executor: Optional[str] = None):
+    # Step 1 (new): pick execution mode. CLI flag --executor pre-empts the prompt;
+    # otherwise we show the questionary selector. Phase 1 ships 'api' only.
+    if executor is None:
+        executor = select_execution_mode()
+
     # First get all user selections
     selections = get_user_selections()
 
@@ -960,6 +965,7 @@ def run_analysis(checkpoint: bool = False):
         config=config,
         debug=True,
         callbacks=[stats_handler],
+        executor=executor,
     )
 
     # Initialize message buffer with selected analysts
@@ -1211,12 +1217,31 @@ def analyze(
         "--clear-checkpoints",
         help="Delete all saved checkpoints before running (force fresh start).",
     ),
+    executor: Optional[str] = typer.Option(
+        None,
+        "--executor",
+        help=(
+            "Execution mode: 'api' (default; existing langchain path), "
+            "'claude-code' / 'codex' / 'gemini' (subscription CLI; phase 4/5). "
+            "Omit to pick interactively."
+        ),
+    ),
 ):
     if clear_checkpoints:
         from tradingagents.graph.checkpointer import clear_all_checkpoints
         n = clear_all_checkpoints(DEFAULT_CONFIG["data_cache_dir"])
         console.print(f"[yellow]Cleared {n} checkpoint(s).[/yellow]")
-    run_analysis(checkpoint=checkpoint)
+
+    # Resolve executor early so an invalid value fails before any prompts.
+    if executor is not None:
+        from tradingagents.executors import resolve_executor
+
+        # resolve_executor raises ValueError / NotImplementedError for bad values.
+        # We call it just for validation here; run_analysis re-resolves and
+        # passes the string to TradingAgentsGraph(executor=...).
+        resolve_executor(executor)
+
+    run_analysis(checkpoint=checkpoint, executor=executor)
 
 
 if __name__ == "__main__":
