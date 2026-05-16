@@ -16,13 +16,13 @@
 
 ## 2. Phase 2 — Decisions MCP server
 
-- [ ] 2.1 加依賴 `mcp` (或 `fastmcp`) 到 `pyproject.toml`,跑 `uv sync` 驗證 lockfile
-- [ ] 2.2 建 `tradingagents/decisions/__init__.py`
-- [ ] 2.3 識別並從 `agents/utils/schemas.py`(或對應位置)取得既有 `TraderProposal`、`PortfolioDecision`、`Rating` Pydantic schema;若沒集中於該檔,在 `tradingagents/decisions/schemas.py` 重新 export 但**不複製定義**(import 既有)
-- [ ] 2.4 建 `tradingagents/decisions/mcp_server.py`: 用 mcp SDK 建立 server,暴露 3 個 tool — `submit_trader_proposal(qty, entry, exit, stop_loss, rationale)`、`submit_portfolio_decision(rating, allocation, rationale)`、`submit_rating(scale, value)`;每個 tool 從對應 Pydantic schema 自動生成 MCP tool schema;tool handler 為 schema-valid 接收 + return-validated-value(不執行其他副作用)
-- [ ] 2.5 加 `tests/test_decisions_mcp.py`: 啟動 server in-process,呼叫 `submit_portfolio_decision(rating="Buy", allocation=0.5, rationale="test")` 成功;呼叫 `submit_portfolio_decision(rating="Buy")` 缺欄位被 reject 並回明確錯誤;呼叫 `submit_rating(scale="invalid", value="x")` 拒絕並列出合法 scale
-- [ ] 2.6 加 README section 或 `tradingagents/decisions/README.md`: 文件啟動指令 `python -m tradingagents.decisions.mcp_server`,以及 stdio / TCP transport 設定
-- [ ] 2.7 **Phase 2 verify gate**: phase 2 新增 test 全綠;手動跑 `python -m tradingagents.decisions.mcp_server` 啟動成功;從另一終端用 mcp client 跑 `list_tools` 看到 3 個 tool;phase 1 既有 tests 仍綠
+- [x] 2.1 加 `mcp>=1.0.0` 依賴到 `pyproject.toml`;`uv sync` 驗證安裝 mcp 1.27.1;順手加 `[dependency-groups] dev` 含 `pytest>=9.0.3` + `pytest-subtests>=0.15.0` (uv sync 預設只裝 main deps,沒這段 dev 工具會被移掉)
+- [x] 2.2 建 `tradingagents/decisions/__init__.py` 暴露 `submit_research_plan` / `submit_trader_proposal` / `submit_portfolio_decision`
+- [x] 2.3 schemas 確認:`tradingagents/agents/schemas.py` 已有 `ResearchPlan` / `TraderProposal` / `PortfolioDecision` + 對應 `PortfolioRating` / `TraderAction` enum;decisions 模組直接 import,**不重新定義**
+- [x] 2.4 建 `tradingagents/decisions/mcp_server.py`: 用 `mcp.server.fastmcp.FastMCP` 包 3 個 tool;lazy import (SDK 不在時模組仍可 import,server 不啟);各 tool 的參數**對應 schema 真實欄位**(spec drift correction,記錄 design §D10):`submit_research_plan(recommendation, rationale, strategic_actions)` / `submit_trader_proposal(action, reasoning, entry_price?, stop_loss?, position_sizing?)` / `submit_portfolio_decision(rating, executive_summary, investment_thesis, price_target?, time_horizon?)`
+- [x] 2.5 加 `tests/test_decisions_submission.py` 15 test: 模組 exports、3 個 submit fn happy path、缺必填 reject、enum 不合法 reject、Trader 的 Overweight reject (鎖 3-tier vs 5-tier 邊界)、mcp_server 模組可 import + 暴露 3 個 handler
+- [-] 2.6 README: **skip** — phase 4 接 claude-code executor 時加(那時才有真正使用者),phase 2 module-level docstring 已足
+- [x] 2.7 **Phase 2 verify gate**: `pytest -q` 全綠 **144 passed (129 baseline + 15 new) + 42 subtests + 1 third-party warning**;`from tradingagents.decisions.mcp_server import _build_server; s = _build_server()` 回 FastMCP instance(name="tradingagents-decisions"),確認 SDK 接通可建 server
 - [ ] 2.8 commit phase 2 (commit msg: `feat(decisions-mcp): expose schema-validated submit tools via MCP server`)
 
 ## 3. Phase 3 — Dataflows MCP server

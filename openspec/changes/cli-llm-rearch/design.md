@@ -68,7 +68,15 @@ class NodeExecutor(Protocol):
 
 ### D3 — 結構化輸出走 MCP `submit_decision` 工具
 
-`tradingagents/decisions/mcp_server.py` 暴露 `submit_trader_proposal(qty, entry, exit, stop_loss, rationale)` / `submit_portfolio_decision(rating, allocation, rationale)` / `submit_rating(scale, value)`,參數即 Pydantic schema。CLI executor 看到 CLI 呼叫這個 tool 時直接拿 schema-valid 物件,完全不依賴 stdout markdown parsing。
+`tradingagents/decisions/mcp_server.py` 暴露三個 submit tools,參數**直接對應**既有 `tradingagents/agents/schemas.py` 的 Pydantic 欄位(不重新定義):
+
+| Tool | 對應 schema | 參數 (從 schemas.py 真實欄位) |
+|---|---|---|
+| `submit_research_plan` | `ResearchPlan` | `recommendation` (PortfolioRating enum), `rationale`, `strategic_actions` |
+| `submit_trader_proposal` | `TraderProposal` | `action` (TraderAction enum), `reasoning`, `entry_price?`, `stop_loss?`, `position_sizing?` |
+| `submit_portfolio_decision` | `PortfolioDecision` | `rating` (PortfolioRating enum), `executive_summary`, `investment_thesis`, `price_target?`, `time_horizon?` |
+
+CLI executor 呼這些 tool 時直接拿 schema-valid 物件(或 schema error)。完全不依賴 stdout markdown parsing。**Phase 2 brainstorm 寫的「qty/entry/exit」是占位字面,Phase 2 implementation 開工讀 schemas.py 後對齊到真實欄位**(spec drift correction,記錄於 §D10)。
 
 **Rationale**: Codex 強烈推薦,符合 D5 dataflows MCP 同輪上的整體方向(反正 MCP server 必須架,多一個 decisions server 邊際成本低)。Heuristic regex 已被 Codex 評為「unserious」。Prompt+JSON+retry 留作 fallback(implementation 階段若發現某 CLI 不支援 MCP tool call,才退而求其次)。
 
@@ -136,6 +144,18 @@ CLI mode 任一 node 失敗(quota exhausted / timeout / parse / tool):
 `.claude/commands/trade.md` 內容只 prompt Claude Code session 執行 `tradingagents analyze --executor claude-code <args>`,**不複製** orchestration。LangGraph 仍是 single source of orchestration truth。
 
 **Rationale**: Codex 強調 `/trade` 不能有 duplicate orchestration;duplicate 會引起兩條路徑 drift,後期 maintenance 災難。Slash command 只是 entry-point alias。
+
+### D10 — Decisions MCP tools 對齊既有 schemas.py 真實欄位(implementation 期間 refinement)
+
+**起源**: Phase 2 task 2.3 開工 grep 既有 Pydantic schema,發現 `tradingagents/agents/schemas.py` 早就定義好 `ResearchPlan` / `TraderProposal` / `PortfolioDecision` 三個 schema,各自欄位跟 brainstorm 期間寫的占位名稱(qty/entry/exit/stop_loss / allocation / scale-value)**不同**。
+
+**處理**:
+- Decisions MCP tools 參數**直接 import** 既有 schemas.py 並用 Pydantic 自動生成 MCP tool schema,**不重新定義**
+- 對應 schema 的真實欄位列在 §D3 表
+- 修 spec: `specs/decisions-mcp/spec.md` 同步把參數欄位改成真實名稱
+- 修 design `## Goals` 段不需改(原本就承諾「沿用既有 Pydantic schema」)
+
+**Rationale**: 避免 spec / impl / schema 三邊 drift。Pydantic 已是 single source of truth,MCP tool 是 thin wrapper。
 
 ### D9 — `NodeSpec._callable` dual-purpose container(implementation 期間 refinement)
 

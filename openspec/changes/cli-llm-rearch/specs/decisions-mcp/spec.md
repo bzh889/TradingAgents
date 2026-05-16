@@ -2,31 +2,51 @@
 
 ### Requirement: Decisions MCP server 啟動點
 
-`tradingagents/decisions/mcp_server.py` SHALL 可獨立啟動為 MCP server,暴露 3 個 submit tools: `submit_trader_proposal`、`submit_portfolio_decision`、`submit_rating`。
+`tradingagents/decisions/mcp_server.py` SHALL 可獨立啟動為 MCP server,暴露 3 個 submit tools: `submit_research_plan`、`submit_trader_proposal`、`submit_portfolio_decision`。三個 tool 各自對應 `tradingagents/agents/schemas.py` 的 `ResearchPlan` / `TraderProposal` / `PortfolioDecision`。
 
 #### Scenario: 獨立啟動 server
 - **WHEN** 跑 `python -m tradingagents.decisions.mcp_server`
 - **THEN** server 正常啟動,接受 `list_tools` 回 3 個 tool 描述
 
+### Requirement: Submission API 不靠 MCP transport 也可呼叫
+
+`tradingagents/decisions/` 模組 SHALL 暴露 3 個純 Python 函式 (`submit_research_plan`、`submit_trader_proposal`、`submit_portfolio_decision`),參數對應對應 schema 的真實欄位,內部用 Pydantic 驗證並回該 Pydantic 實例。SHALL 不依賴 MCP transport 也能被 import / 呼叫(MCP server 只是這些函式的 transport wrapper)。
+
+#### Scenario: 直接呼叫 submit_portfolio_decision Python API
+- **WHEN** 任何 Python code import 並呼 `submit_portfolio_decision(rating="Buy", executive_summary="...", investment_thesis="...")`
+- **THEN** 回傳 `PortfolioDecision` Pydantic 實例,所有欄位填好
+
 ### Requirement: Tool 參數 schema 對齊既有 Pydantic schema
 
-Decisions MCP server 每個 tool 的參數 schema SHALL 從 `tradingagents/agents/utils/schemas.py`(或對應位置)既有 Pydantic schema 直接生成,SHALL NOT 重新定義 schema。三個 tool 對應的 schema 為 `TraderProposal`、`PortfolioDecision`、`Rating`(各自欄位於 brainstorm design §3.4 已定)。
+Decisions MCP server 每個 tool 的參數 schema SHALL 從 `tradingagents/agents/schemas.py` 既有 Pydantic schema 直接生成,SHALL NOT 重新定義 schema。
 
 #### Scenario: submit_trader_proposal 參數對齊
 - **WHEN** MCP client 跑 `list_tools` 取 `submit_trader_proposal` schema
-- **THEN** schema 含欄位 `qty`、`entry`、`exit`、`stop_loss`、`rationale`,各欄位型別跟 `TraderProposal` Pydantic 定義一致
+- **THEN** schema 含欄位 `action` (enum: Buy/Hold/Sell)、`reasoning`、`entry_price` (optional)、`stop_loss` (optional)、`position_sizing` (optional),各欄位型別跟 `TraderProposal` Pydantic 定義一致
+
+#### Scenario: submit_portfolio_decision 參數對齊
+- **WHEN** MCP client 跑 `list_tools` 取 `submit_portfolio_decision` schema
+- **THEN** schema 含欄位 `rating` (enum: Buy/Overweight/Hold/Underweight/Sell)、`executive_summary`、`investment_thesis`、`price_target` (optional)、`time_horizon` (optional)
+
+#### Scenario: submit_research_plan 參數對齊
+- **WHEN** MCP client 跑 `list_tools` 取 `submit_research_plan` schema
+- **THEN** schema 含欄位 `recommendation` (enum: Buy/Overweight/Hold/Underweight/Sell)、`rationale`、`strategic_actions`
 
 ### Requirement: Schema 驗證失敗 strict reject
 
 Decisions MCP server SHALL 在收到 schema-invalid 呼叫時拒絕並回明確錯誤(不接受、不部分填充、不靜默丟掉欄位)。
 
-#### Scenario: submit_portfolio_decision 缺欄位
-- **WHEN** CLI 呼叫 `submit_portfolio_decision(rating="Buy")`(缺 `allocation`、`rationale`)
-- **THEN** MCP server 回錯誤訊息明確指出缺失欄位,SHALL NOT 接受該呼叫,CLI executor 收到 error 後回 `ExecutorError(reason="schema_validation_failed", details=<error>)`
+#### Scenario: submit_portfolio_decision 缺必填欄位
+- **WHEN** CLI 呼叫 `submit_portfolio_decision(rating="Buy")`(缺 `executive_summary`、`investment_thesis`)
+- **THEN** Pydantic ValidationError 攔到,SHALL NOT 接受該呼叫;CLI executor 端收到 error 後回 `ExecutorError(reason="schema_validation_failed", details=<error>)`
 
-#### Scenario: submit_rating 不合法值
-- **WHEN** CLI 呼叫 `submit_rating(scale="invalid-scale", value="x")`
-- **THEN** MCP server 拒絕,回錯誤訊息列出合法 scale 值跟 value 型別要求
+#### Scenario: submit_portfolio_decision rating 不合法
+- **WHEN** CLI 呼叫 `submit_portfolio_decision(rating="MaybeBuy", ...)`(非 PortfolioRating enum)
+- **THEN** Pydantic 拒絕並列出合法 enum 值 (Buy / Overweight / Hold / Underweight / Sell)
+
+#### Scenario: submit_trader_proposal action 不合法
+- **WHEN** CLI 呼叫 `submit_trader_proposal(action="StrongBuy", reasoning="...")`(非 TraderAction enum)
+- **THEN** Pydantic 拒絕並列出合法 enum 值 (Buy / Hold / Sell)
 
 ### Requirement: API mode 不依賴 decisions MCP
 
