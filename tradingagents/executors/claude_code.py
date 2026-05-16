@@ -37,8 +37,20 @@ import subprocess
 import tempfile
 from typing import Any, Optional
 
-from ._subprocess_common import raise_if_no_structured_output, resolve_cli_binary
+from ._subprocess_common import raise_if_no_structured_output, resolve_cli_binary, utf8_env
 from .types import ExecutorError, NodeResult, NodeSpec
+
+
+# Env vars that, if present, force Claude Code CLI to fall back to API-key
+# pay-per-token mode and bypass the user's subscription keychain OAuth.
+# Stripped from the subprocess env block in run_node(). Dogfood-found:
+# a stray ANTHROPIC_API_KEY=sk-... in the parent process (even a dummy one
+# set elsewhere) bypassed the subscription and made the run fail with
+# "Invalid API key" instead of using the logged-in account.
+_SUBSCRIPTION_KILLING_VARS = (
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+)
 
 
 # Quota / rate-limit / auth-failure detection patterns. Subscription CLIs do
@@ -60,19 +72,10 @@ _AUTH_PATTERNS = (
 
 
 def _utf8_env() -> dict[str, str]:
-    """Return a copy of os.environ with utf-8 forced. Design §R5 / §7.1."""
-    env = dict(os.environ)
-    env.update(
-        {
-            "PYTHONUTF8": "1",
-            "PYTHONIOENCODING": "utf-8",
-            "LANG": "C.UTF-8",
-            "LC_ALL": "C.UTF-8",
-            "NO_COLOR": "1",
-            "TERM": "dumb",
-        }
-    )
-    return env
+    """Return a copy of os.environ with utf-8 forced AND subscription-killing
+    env vars stripped. Design §R5 / §7.1 + dogfood fix.
+    """
+    return utf8_env(strip_vars=_SUBSCRIPTION_KILLING_VARS)
 
 
 def _categorise_failure(result_text: str) -> str:
@@ -195,7 +198,13 @@ class ClaudeCodeExecutor:
 
     def __init__(
         self,
-        timeout_seconds: int = 60,
+        # 60s was the original default; dogfood-found-bug: a real
+        # market_analyst node takes 60-180s end-to-end (fetch data + reason +
+        # write report), and 60s timed out before the subprocess could even
+        # finish producing output. 300s is a safer default; the user can
+        # override via TradingAgentsGraph(executor=instance(timeout_seconds=N))
+        # if needed.
+        timeout_seconds: int = 300,
         mcp_config: Optional[str] = None,
         extra_args: Optional[list[str]] = None,
     ):
@@ -284,8 +293,14 @@ class ClaudeCodeExecutor:
         # Free-text path: surface the result string under the agent's state key.
         text = result_event.get("result", "")
         state_key = _AGENT_TO_STATE_KEY.get(spec.agent_role, f"{spec.agent_role}_report")
+        # Dogfood-found-bug: langgraph's add_messages reducer wraps raw strings
+        # into HumanMessage, which has no `tool_calls` attribute. The graph's
+        # conditional edges read `.tool_calls` on the last message and crash.
+        # Wrap in AIMessage so the downstream contract matches API-mode nodes.
+        from langchain_core.messages import AIMessage
+        messages = [AIMessage(content=text)] if text else []
         return NodeResult(
-            state_delta={state_key: text, "messages": [text] if text else []},
+            state_delta={state_key: text, "messages": messages},
             raw_artifact_path=None,
             executor_metadata={
                 "executor": "claude-code",

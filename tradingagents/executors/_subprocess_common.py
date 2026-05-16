@@ -85,9 +85,25 @@ def resolve_cli_binary(name: str, executor_name: str) -> str:
     return resolved
 
 
-def utf8_env() -> dict[str, str]:
-    """Return a copy of os.environ forced to utf-8. Design §R5 / §7.1."""
+def utf8_env(strip_vars: tuple[str, ...] = ()) -> dict[str, str]:
+    """Return a copy of os.environ forced to utf-8, optionally stripping vars.
+
+    `strip_vars` removes specific env vars before handing the env block to
+    the subprocess. Each CLI executor passes the var names that would force
+    the subscription CLI to fall back to pay-per-token mode:
+
+    - claude-code → strip ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN (otherwise
+      Claude Code CLI prefers the env key over keychain OAuth and the user's
+      subscription stops being used)
+    - codex → strip OPENAI_API_KEY / CODEX_API_KEY
+    - gemini → strip GEMINI_API_KEY / GOOGLE_API_KEY (when the user wants
+      the subscription/login path rather than the API-key path)
+
+    Design §R5 / §7.1.
+    """
     env = dict(os.environ)
+    for var in strip_vars:
+        env.pop(var, None)
     env.update(
         {
             "PYTHONUTF8": "1",
@@ -117,6 +133,9 @@ AUTH_PATTERNS = (
     re.compile(r"\bauthentication", re.IGNORECASE),
     re.compile(r"\bunauthori[sz]ed", re.IGNORECASE),
     re.compile(r"\b401\b"),
+    re.compile(r"\binvalid api key", re.IGNORECASE),
+    re.compile(r"\bset (?:an )?auth method", re.IGNORECASE),
+    re.compile(r"\bfix external api key", re.IGNORECASE),
 )
 
 

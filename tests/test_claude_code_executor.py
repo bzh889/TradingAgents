@@ -183,9 +183,13 @@ class TestClaudeCodeExecutorResponseParsing:
             )
 
         assert "market_report" in result.state_delta or "messages" in result.state_delta
-        # Either way the text gets surfaced somewhere
-        text_blob = json.dumps(result.state_delta)
-        assert "Market trending up" in text_blob
+        # state_delta["messages"] is now a list[AIMessage] (dogfood-fixed: raw
+        # strings auto-wrapped to HumanMessage by langgraph break downstream
+        # tool_calls access). Check the free-text directly + via AIMessage.
+        assert "Market trending up" in result.state_delta.get("market_report", "")
+        msgs = result.state_delta.get("messages", [])
+        if msgs:
+            assert "Market trending up" in msgs[0].content
 
     def test_extracts_submit_portfolio_decision_tool_call(self):
         """When CLI invokes the decisions MCP submit_portfolio_decision tool,

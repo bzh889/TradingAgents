@@ -129,7 +129,7 @@ class CodexExecutor:
 
     def __init__(
         self,
-        timeout_seconds: int = 60,
+        timeout_seconds: int = 300,
         reasoning_effort: str = "medium",
         extra_args: Optional[list[str]] = None,
     ):
@@ -213,8 +213,12 @@ class CodexExecutor:
 
         text = terminal.get("result", "")
         state_key = AGENT_TO_STATE_KEY.get(spec.agent_role, f"{spec.agent_role}_report")
+        # See claude_code.py for rationale: wrap as AIMessage so downstream
+        # conditional-edge `.tool_calls` access does not crash on HumanMessage.
+        from langchain_core.messages import AIMessage
+        messages = [AIMessage(content=text)] if text else []
         return NodeResult(
-            state_delta={state_key: text, "messages": [text] if text else []},
+            state_delta={state_key: text, "messages": messages},
             raw_artifact_path=None,
             executor_metadata={
                 "executor": "codex",
