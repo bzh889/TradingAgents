@@ -13,46 +13,35 @@ console = Console()
 EXECUTION_MODES = [
     ("API (langchain) — direct LLM API calls (existing behaviour)", "api"),
     ("Claude Code (subscription) — uses your Claude Code login", "claude-code"),
-    ("Codex CLI (subscription) — coming soon (Phase 5)", "codex"),
-    ("Gemini CLI (subscription) — coming soon (Phase 5)", "gemini"),
+    ("Codex CLI (subscription) — uses your Codex login", "codex"),
+    ("Gemini CLI (subscription) — uses your Gemini login", "gemini"),
 ]
 
 
 def select_execution_mode() -> str:
     """Step 1: pick the execution mode.
 
-    Returns one of 'api' / 'claude-code' / 'codex' / 'gemini'. Phase 4 ships
-    'api' and 'claude-code'; codex and gemini raise NotImplementedError via
-    resolve_executor() and we re-prompt. See openspec/changes/cli-llm-rearch/
-    design.md §D5.
+    Returns one of 'api' / 'claude-code' / 'codex' / 'gemini'. All four are
+    shipped as of phase 5. See openspec/changes/cli-llm-rearch/design.md §D5.
     """
-    while True:
-        choice = questionary.select(
-            "Step 1: Select execution mode",
-            choices=[
-                questionary.Choice(label, value=value)
-                for label, value in EXECUTION_MODES
-            ],
-            style=questionary.Style(
-                [
-                    ("selected", "fg:green noinherit"),
-                    ("highlighted", "noinherit"),
-                ]
-            ),
-        ).ask()
+    choice = questionary.select(
+        "Step 1: Select execution mode",
+        choices=[
+            questionary.Choice(label, value=value)
+            for label, value in EXECUTION_MODES
+        ],
+        style=questionary.Style(
+            [
+                ("selected", "fg:green noinherit"),
+                ("highlighted", "noinherit"),
+            ]
+        ),
+    ).ask()
 
-        if choice is None:
-            console.print("\n[red]No execution mode selected. Exiting...[/red]")
-            exit(1)
-
-        if choice in ("api", "claude-code"):
-            return choice
-
-        # Phase 5 modes not yet shipped — re-prompt with explanation.
-        console.print(
-            f"\n[yellow]'{choice}' executor ships in phase 5. "
-            "Pick 'api' or 'claude-code' for now.[/yellow]\n"
-        )
+    if choice is None:
+        console.print("\n[red]No execution mode selected. Exiting...[/red]")
+        exit(1)
+    return choice
 
 TICKER_INPUT_EXAMPLES = "Examples: SPY, CNC.TO, 7203.T, 0700.HK"
 

@@ -6,6 +6,50 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Breaking changes within the 0.x line are called out explicitly.
 
+## [Unreleased]
+
+### Added
+
+- **Subscription-CLI execution modes.** `tradingagents analyze` now offers four
+  execution modes via a two-stage interactive selector or the `--executor` flag:
+  - `api` (default): the existing langchain path — unchanged
+  - `claude-code`: every LangGraph node spawns a child `claude --print` and
+    uses the user's Claude Code subscription (no per-token cost)
+  - `codex`: delegates each node to `codex exec --json -s read-only`
+  - `gemini`: delegates each node to `gemini -p ... -o stream-json -y`
+  CLI executors share the same `NodeExecutor` protocol as the API executor;
+  the LangGraph orchestrator (node order, debate rounds, agents, persistence,
+  reports) is unchanged. CLI mode failures fail-closed at node boundary with
+  explicit quota / auth / timeout error categorisation; users resume with
+  `tradingagents analyze --resume --executor api`.
+- **Two MCP servers exposed for CLI executors.**
+  - `tradingagents.dataflows.mcp_server` — 9 read-only tools wrapping the
+    existing yfinance + alpha_vantage routing (with the same rate-limit
+    fallback). API mode can opt in via `TRADINGAGENTS_DATAFLOWS_VIA_MCP=1`.
+  - `tradingagents.decisions.mcp_server` — 3 schema-validated submit tools
+    (`submit_research_plan` / `submit_trader_proposal` /
+    `submit_portfolio_decision`) for CLI executors to return structured
+    decisions without parsing markdown stdout.
+- **`/trade` Claude Code slash command** — thin wrapper that runs
+  `tradingagents analyze --executor claude-code <ticker> <date>` from inside
+  a Claude Code session.
+- **Windows + non-ASCII safety** — CLI executors force a full utf-8 env block
+  on every subprocess (`PYTHONUTF8`, `PYTHONIOENCODING`, `LANG`, `LC_ALL`,
+  `NO_COLOR`, `TERM=dumb`) and decode stdout/stderr with `errors="replace"`.
+  Structured output is taken from MCP tool-call payloads, never from human
+  stdout parsing.
+
+### Internal
+
+- New `tradingagents/executors/` module — `NodeExecutor` Protocol,
+  `APIExecutor` wrapping existing langchain, plus `ClaudeCodeExecutor`,
+  `CodexExecutor`, `GeminiExecutor`. The graph wires every `create_*(llm)`
+  agent factory through `executor.run_node(...)` via the
+  `_wrap_node_through_executor` helper, keeping `tradingagents/agents/**`
+  zero-modification. Design: `openspec/changes/cli-llm-rearch/`.
+- `mcp>=1.0.0` runtime dependency. pytest-subtests + pytest declared as a
+  dev dependency group so `uv sync` keeps the test runner installed.
+
 ## [0.2.4] — 2026-04-25
 
 ### Added
