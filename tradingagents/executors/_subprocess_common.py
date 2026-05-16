@@ -178,3 +178,169 @@ SUBMIT_TOOL_TO_STATE_KEY: dict[str, str] = {
     "submit_trader_proposal": "trader_investment_plan",
     "submit_portfolio_decision": "final_trade_decision",
 }
+
+
+def _ai_messages(text: str) -> list:
+    """Wrap text into [AIMessage(content=text)] (empty list if text is falsy).
+
+    Lazy-imported because importing langchain_core at module load time would
+    re-introduce the 'OpenAI API key required at import' chain that
+    dogfood-fix #2 worked around (TradingAgentsGraph init builds LLM clients).
+    """
+    if not text:
+        return []
+    from langchain_core.messages import AIMessage
+    return [AIMessage(content=text)]
+
+
+def build_state_delta(agent_role: str, text: str, state: dict) -> dict:
+    """Map free-text LLM output to the exact state-delta shape each LangGraph
+    node would have returned in API mode.
+
+    Conditional edges (conditional_logic.should_continue_debate /
+    should_continue_risk_analysis) route based on:
+      - `state["investment_debate_state"]["current_response"]` (startswith
+        "Bull" / "Bear")
+      - `state["risk_debate_state"]["latest_speaker"]` (startswith
+        "Aggressive" / "Conservative")
+      - `state["investment_debate_state"]["count"]` (round limit)
+      - `state["risk_debate_state"]["count"]` (round limit)
+
+    Dogfood found: CLI executors returned only `{role_report: text}` which left
+    these dict keys stale, so conditional fell through to the default branch
+    (e.g. "Bull Researcher" returned from itself) and langgraph raised
+    KeyError on the routing map lookup. This adapter reproduces the per-role
+    shape so graph routing matches API mode.
+    """
+    messages = _ai_messages(text)
+    base = {"messages": messages} if messages else {}
+
+    # Analyst nodes — flat report key.
+    if agent_role == "market_analyst":
+        return {**base, "market_report": text}
+    if agent_role == "social_media_analyst":
+        return {**base, "sentiment_report": text}
+    if agent_role == "news_analyst":
+        return {**base, "news_report": text}
+    if agent_role == "fundamentals_analyst":
+        return {**base, "fundamentals_report": text}
+
+    # Debate (research) nodes — must update investment_debate_state shape +
+    # current_response prefix so conditional_logic startswith() check routes.
+    if agent_role == "bull_researcher":
+        ids = state.get("investment_debate_state", {}) or {}
+        argument = f"Bull Analyst: {text}"
+        new_ids = {
+            "history": (ids.get("history") or "") + "\n" + argument,
+            "bull_history": (ids.get("bull_history") or "") + "\n" + argument,
+            "bear_history": ids.get("bear_history", ""),
+            "current_response": argument,
+            "count": (ids.get("count") or 0) + 1,
+        }
+        return {**base, "investment_debate_state": new_ids}
+
+    if agent_role == "bear_researcher":
+        ids = state.get("investment_debate_state", {}) or {}
+        argument = f"Bear Analyst: {text}"
+        new_ids = {
+            "history": (ids.get("history") or "") + "\n" + argument,
+            "bear_history": (ids.get("bear_history") or "") + "\n" + argument,
+            "bull_history": ids.get("bull_history", ""),
+            "current_response": argument,
+            "count": (ids.get("count") or 0) + 1,
+        }
+        return {**base, "investment_debate_state": new_ids}
+
+    if agent_role == "research_manager":
+        ids = state.get("investment_debate_state", {}) or {}
+        new_ids = {
+            "judge_decision": text,
+            "history": ids.get("history", ""),
+            "bull_history": ids.get("bull_history", ""),
+            "bear_history": ids.get("bear_history", ""),
+            "current_response": text,
+            "count": ids.get("count", 0),
+        }
+        return {
+            **base,
+            "investment_debate_state": new_ids,
+            "investment_plan": text,
+        }
+
+    if agent_role == "trader":
+        return {**base, "trader_investment_plan": text}
+
+    # Risk debate nodes — must update risk_debate_state with latest_speaker
+    # so should_continue_risk_analysis routes; conservative/neutral debators
+    # follow the same shape.
+    if agent_role == "aggressive_analyst":
+        rds = state.get("risk_debate_state", {}) or {}
+        argument = f"Aggressive Analyst: {text}"
+        new_rds = {
+            "history": (rds.get("history") or "") + "\n" + argument,
+            "aggressive_history": (rds.get("aggressive_history") or "") + "\n" + argument,
+            "conservative_history": rds.get("conservative_history", ""),
+            "neutral_history": rds.get("neutral_history", ""),
+            "latest_speaker": "Aggressive",
+            "current_aggressive_response": argument,
+            "current_conservative_response": rds.get("current_conservative_response", ""),
+            "current_neutral_response": rds.get("current_neutral_response", ""),
+            "count": (rds.get("count") or 0) + 1,
+        }
+        return {**base, "risk_debate_state": new_rds}
+
+    if agent_role == "conservative_analyst":
+        rds = state.get("risk_debate_state", {}) or {}
+        argument = f"Conservative Analyst: {text}"
+        new_rds = {
+            "history": (rds.get("history") or "") + "\n" + argument,
+            "aggressive_history": rds.get("aggressive_history", ""),
+            "conservative_history": (rds.get("conservative_history") or "") + "\n" + argument,
+            "neutral_history": rds.get("neutral_history", ""),
+            "latest_speaker": "Conservative",
+            "current_aggressive_response": rds.get("current_aggressive_response", ""),
+            "current_conservative_response": argument,
+            "current_neutral_response": rds.get("current_neutral_response", ""),
+            "count": (rds.get("count") or 0) + 1,
+        }
+        return {**base, "risk_debate_state": new_rds}
+
+    if agent_role == "neutral_analyst":
+        rds = state.get("risk_debate_state", {}) or {}
+        argument = f"Neutral Analyst: {text}"
+        new_rds = {
+            "history": (rds.get("history") or "") + "\n" + argument,
+            "aggressive_history": rds.get("aggressive_history", ""),
+            "conservative_history": rds.get("conservative_history", ""),
+            "neutral_history": (rds.get("neutral_history") or "") + "\n" + argument,
+            "latest_speaker": "Neutral",
+            "current_aggressive_response": rds.get("current_aggressive_response", ""),
+            "current_conservative_response": rds.get("current_conservative_response", ""),
+            "current_neutral_response": argument,
+            "count": (rds.get("count") or 0) + 1,
+        }
+        return {**base, "risk_debate_state": new_rds}
+
+    if agent_role == "portfolio_manager":
+        rds = state.get("risk_debate_state", {}) or {}
+        new_rds = {
+            "judge_decision": text,
+            "history": rds.get("history", ""),
+            "aggressive_history": rds.get("aggressive_history", ""),
+            "conservative_history": rds.get("conservative_history", ""),
+            "neutral_history": rds.get("neutral_history", ""),
+            "latest_speaker": "Judge",
+            "current_aggressive_response": rds.get("current_aggressive_response", ""),
+            "current_conservative_response": rds.get("current_conservative_response", ""),
+            "current_neutral_response": rds.get("current_neutral_response", ""),
+            "count": rds.get("count", 0),
+        }
+        return {
+            **base,
+            "risk_debate_state": new_rds,
+            "final_trade_decision": text,
+        }
+
+    # Fallback: unknown agent role -> flat report key matching AGENT_TO_STATE_KEY.
+    fallback_key = AGENT_TO_STATE_KEY.get(agent_role, f"{agent_role}_report")
+    return {**base, fallback_key: text}

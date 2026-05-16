@@ -7,25 +7,31 @@ gemini) to receive structured output via MCP tool calls without parsing
 markdown stdout. API mode uses langchain `bind_structured` directly and does
 not call these functions.
 
+Dogfood-found: importing `tradingagents.agents.schemas` at module load
+triggers `tradingagents.agents.__init__` which pulls in every agent (all of
+langchain). That tanked MCP-server cold-start time to ~30s and made Claude
+Code give up before tools were discovered. Lazy-import the schemas inside
+each submit_* so this package is near-instant to load.
+
 See openspec/changes/cli-llm-rearch/design.md §D3 / §D10.
 """
 
-from tradingagents.agents.schemas import (
-    PortfolioDecision,
-    ResearchPlan,
-    TraderProposal,
-)
 
+def submit_research_plan(**kwargs):
+    from tradingagents.agents.schemas import ResearchPlan
 
-def submit_research_plan(**kwargs) -> ResearchPlan:
     return ResearchPlan(**kwargs)
 
 
-def submit_trader_proposal(**kwargs) -> TraderProposal:
+def submit_trader_proposal(**kwargs):
+    from tradingagents.agents.schemas import TraderProposal
+
     return TraderProposal(**kwargs)
 
 
-def submit_portfolio_decision(**kwargs) -> PortfolioDecision:
+def submit_portfolio_decision(**kwargs):
+    from tradingagents.agents.schemas import PortfolioDecision
+
     return PortfolioDecision(**kwargs)
 
 

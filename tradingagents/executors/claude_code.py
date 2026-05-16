@@ -37,7 +37,12 @@ import subprocess
 import tempfile
 from typing import Any, Optional
 
-from ._subprocess_common import raise_if_no_structured_output, resolve_cli_binary, utf8_env
+from ._subprocess_common import (
+    build_state_delta,
+    raise_if_no_structured_output,
+    resolve_cli_binary,
+    utf8_env,
+)
 from .types import ExecutorError, NodeResult, NodeSpec
 
 
@@ -50,6 +55,27 @@ from .types import ExecutorError, NodeResult, NodeSpec
 _SUBSCRIPTION_KILLING_VARS = (
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
+)
+
+
+# MCP tool names Claude Code is allowed to invoke when --mcp-config is passed.
+# Format: `mcp__<server-name-from-config>__<tool-name>`. Listed explicitly so
+# --allowedTools forces them all into scope without each one needing a
+# ToolSearch round-trip. Mirrors the surface defined in
+# tradingagents/{dataflows,decisions}/mcp_server.py.
+_MCP_ALLOWED_TOOLS = (
+    "mcp__tradingagents-dataflows__get_stock_data",
+    "mcp__tradingagents-dataflows__get_indicators",
+    "mcp__tradingagents-dataflows__get_fundamentals",
+    "mcp__tradingagents-dataflows__get_balance_sheet",
+    "mcp__tradingagents-dataflows__get_cashflow",
+    "mcp__tradingagents-dataflows__get_income_statement",
+    "mcp__tradingagents-dataflows__get_news",
+    "mcp__tradingagents-dataflows__get_global_news",
+    "mcp__tradingagents-dataflows__get_insider_transactions",
+    "mcp__tradingagents-decisions__submit_research_plan",
+    "mcp__tradingagents-decisions__submit_trader_proposal",
+    "mcp__tradingagents-decisions__submit_portfolio_decision",
 )
 
 
@@ -198,13 +224,13 @@ class ClaudeCodeExecutor:
 
     def __init__(
         self,
-        # 60s was the original default; dogfood-found-bug: a real
-        # market_analyst node takes 60-180s end-to-end (fetch data + reason +
-        # write report), and 60s timed out before the subprocess could even
-        # finish producing output. 300s is a safer default; the user can
-        # override via TradingAgentsGraph(executor=instance(timeout_seconds=N))
-        # if needed.
-        timeout_seconds: int = 300,
+        # Dogfood iterations on default timeout:
+        #   60s  → too short, real node takes 60-180s (claude API + write)
+        #   300s → still too short once MCP tools are wired; agent does
+        #          ToolSearch + multi-turn tool calls + reasoning, easily 5min+
+        #   600s → covers a real market_analyst with MCP-tool path
+        # Override via TradingAgentsGraph(executor=ClaudeCodeExecutor(timeout_seconds=N))
+        timeout_seconds: int = 600,
         mcp_config: Optional[str] = None,
         extra_args: Optional[list[str]] = None,
     ):
@@ -290,17 +316,13 @@ class ClaudeCodeExecutor:
                 },
             )
 
-        # Free-text path: surface the result string under the agent's state key.
+        # Free-text path: route through the per-agent state-shape adapter so
+        # debate/risk routing keys (current_response prefix, latest_speaker,
+        # count) are populated to match what API-mode nodes return.
         text = result_event.get("result", "")
-        state_key = _AGENT_TO_STATE_KEY.get(spec.agent_role, f"{spec.agent_role}_report")
-        # Dogfood-found-bug: langgraph's add_messages reducer wraps raw strings
-        # into HumanMessage, which has no `tool_calls` attribute. The graph's
-        # conditional edges read `.tool_calls` on the last message and crash.
-        # Wrap in AIMessage so the downstream contract matches API-mode nodes.
-        from langchain_core.messages import AIMessage
-        messages = [AIMessage(content=text)] if text else []
+        delta = build_state_delta(spec.agent_role, text, state)
         return NodeResult(
-            state_delta={state_key: text, "messages": messages},
+            state_delta=delta,
             raw_artifact_path=None,
             executor_metadata={
                 "executor": "claude-code",
@@ -327,6 +349,15 @@ class ClaudeCodeExecutor:
         ]
         if self.mcp_config:
             argv.extend(["--mcp-config", self.mcp_config, "--strict-mcp-config"])
+            # Pre-allow the MCP tools so Claude does not have to ToolSearch
+            # them one at a time before invocation. Claude exposes MCP tools
+            # under the prefix `mcp__<server-name>__<tool-name>`; we add the
+            # 9 dataflows + 3 decisions tools.
+            argv.extend([
+                "--allowedTools",
+                # Use a comma-separated single string so it parses as one arg.
+                ",".join(_MCP_ALLOWED_TOOLS),
+            ])
         argv.extend(self.extra_args)
         argv.append(prompt)
         return argv

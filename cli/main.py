@@ -959,6 +959,20 @@ def run_analysis(checkpoint: bool = False, executor: Optional[str] = None):
     selected_set = {analyst.value for analyst in selections["analysts"]}
     selected_analyst_keys = [a for a in ANALYST_ORDER if a in selected_set]
 
+    # When the user picked a CLI executor (claude-code / codex / gemini),
+    # auto-generate an mcp-config.json so the subprocess can fetch market
+    # data from `tradingagents-dataflows` and submit decisions to
+    # `tradingagents-decisions`. The config lives alongside the run reports.
+    mcp_config_path = None
+    if executor and executor != "api":
+        from tradingagents.executors.mcp_config import write_mcp_config
+        results_root = Path(config["results_dir"]) / selections["ticker"] / selections["analysis_date"]
+        results_root.mkdir(parents=True, exist_ok=True)
+        mcp_config_path = str(write_mcp_config(target_dir=results_root))
+        console.print(
+            f"[dim]MCP config written for CLI executor: {mcp_config_path}[/dim]"
+        )
+
     # Initialize the graph with callbacks bound to LLMs
     graph = TradingAgentsGraph(
         selected_analyst_keys,
@@ -966,6 +980,7 @@ def run_analysis(checkpoint: bool = False, executor: Optional[str] = None):
         debug=True,
         callbacks=[stats_handler],
         executor=executor,
+        mcp_config=mcp_config_path,
     )
 
     # Initialize message buffer with selected analysts

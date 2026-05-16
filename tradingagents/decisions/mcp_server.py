@@ -15,11 +15,68 @@ from __future__ import annotations
 
 import sys
 
-from tradingagents.decisions import (
-    submit_portfolio_decision,
-    submit_research_plan,
-    submit_trader_proposal,
-)
+
+# Module-level lazy proxies. Same pattern as dataflows/mcp_server.py — avoids
+# importing the full `tradingagents.decisions` package (which transitively
+# loads schemas + pydantic + agents) at MCP-server startup. Claude probes for
+# tools immediately after spawn; a slow startup means the agent gives up
+# before tools are registered.
+#
+# Tests assert these names exist on the module via hasattr(); the lazy proxy
+# satisfies that contract while deferring heavy imports to first call.
+
+
+def submit_research_plan(
+    recommendation: str,
+    rationale: str,
+    strategic_actions: str,
+) -> dict:
+    """Submit a ResearchPlan; returns the validated dict."""
+    from tradingagents.decisions import submit_research_plan as _impl
+
+    return _impl(
+        recommendation=recommendation,
+        rationale=rationale,
+        strategic_actions=strategic_actions,
+    ).model_dump()
+
+
+def submit_trader_proposal(
+    action: str,
+    reasoning: str,
+    entry_price: float | None = None,
+    stop_loss: float | None = None,
+    position_sizing: str | None = None,
+) -> dict:
+    """Submit a TraderProposal; returns the validated dict."""
+    from tradingagents.decisions import submit_trader_proposal as _impl
+
+    return _impl(
+        action=action,
+        reasoning=reasoning,
+        entry_price=entry_price,
+        stop_loss=stop_loss,
+        position_sizing=position_sizing,
+    ).model_dump()
+
+
+def submit_portfolio_decision(
+    rating: str,
+    executive_summary: str,
+    investment_thesis: str,
+    price_target: float | None = None,
+    time_horizon: str | None = None,
+) -> dict:
+    """Submit a PortfolioDecision; returns the validated dict."""
+    from tradingagents.decisions import submit_portfolio_decision as _impl
+
+    return _impl(
+        rating=rating,
+        executive_summary=executive_summary,
+        investment_thesis=investment_thesis,
+        price_target=price_target,
+        time_horizon=time_horizon,
+    ).model_dump()
 
 
 def _build_server():
@@ -30,54 +87,9 @@ def _build_server():
         return None
 
     server = FastMCP("tradingagents-decisions")
-
-    @server.tool()
-    def submit_research_plan_tool(
-        recommendation: str,
-        rationale: str,
-        strategic_actions: str,
-    ) -> dict:
-        """Submit a ResearchPlan; returns the validated dict."""
-        return submit_research_plan(
-            recommendation=recommendation,
-            rationale=rationale,
-            strategic_actions=strategic_actions,
-        ).model_dump()
-
-    @server.tool()
-    def submit_trader_proposal_tool(
-        action: str,
-        reasoning: str,
-        entry_price: float | None = None,
-        stop_loss: float | None = None,
-        position_sizing: str | None = None,
-    ) -> dict:
-        """Submit a TraderProposal; returns the validated dict."""
-        return submit_trader_proposal(
-            action=action,
-            reasoning=reasoning,
-            entry_price=entry_price,
-            stop_loss=stop_loss,
-            position_sizing=position_sizing,
-        ).model_dump()
-
-    @server.tool()
-    def submit_portfolio_decision_tool(
-        rating: str,
-        executive_summary: str,
-        investment_thesis: str,
-        price_target: float | None = None,
-        time_horizon: str | None = None,
-    ) -> dict:
-        """Submit a PortfolioDecision; returns the validated dict."""
-        return submit_portfolio_decision(
-            rating=rating,
-            executive_summary=executive_summary,
-            investment_thesis=investment_thesis,
-            price_target=price_target,
-            time_horizon=time_horizon,
-        ).model_dump()
-
+    server.tool(name="submit_research_plan")(submit_research_plan)
+    server.tool(name="submit_trader_proposal")(submit_trader_proposal)
+    server.tool(name="submit_portfolio_decision")(submit_portfolio_decision)
     return server
 
 

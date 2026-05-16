@@ -28,6 +28,7 @@ from typing import Any, Optional
 from ._subprocess_common import (
     AGENT_TO_STATE_KEY,
     SUBMIT_TOOL_TO_STATE_KEY,
+    build_state_delta,
     categorise_failure,
     raise_if_no_structured_output,
     resolve_cli_binary,
@@ -154,7 +155,7 @@ class GeminiExecutor:
 
     def __init__(
         self,
-        timeout_seconds: int = 300,
+        timeout_seconds: int = 600,
         model: Optional[str] = None,
         allowed_mcp_servers: Optional[list[str]] = None,
         extra_args: Optional[list[str]] = None,
@@ -239,13 +240,9 @@ class GeminiExecutor:
             )
 
         text = terminal.get("result", "")
-        state_key = AGENT_TO_STATE_KEY.get(spec.agent_role, f"{spec.agent_role}_report")
-        # See claude_code.py for rationale: wrap as AIMessage so downstream
-        # conditional-edge `.tool_calls` access does not crash on HumanMessage.
-        from langchain_core.messages import AIMessage
-        messages = [AIMessage(content=text)] if text else []
+        delta = build_state_delta(spec.agent_role, text, state)
         return NodeResult(
-            state_delta={state_key: text, "messages": messages},
+            state_delta=delta,
             raw_artifact_path=None,
             executor_metadata={
                 "executor": "gemini",

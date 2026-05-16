@@ -18,7 +18,25 @@ from __future__ import annotations
 import sys
 from typing import Optional
 
-from tradingagents.dataflows.interface import route_to_vendor
+
+def route_to_vendor(method: str, *args, **kwargs):
+    """Module-level lazy proxy to interface.route_to_vendor.
+
+    Dogfood-found: importing `tradingagents.dataflows.interface` at module load
+    pulls pandas + yfinance + alpha_vantage (~30s on a cold venv). Claude
+    Code's `--mcp-config` probes the server immediately after spawn — if the
+    process hasn't finished importing in time, claude reports "MCP servers
+    are still connecting" and the agent gives up. Defer the heavy import to
+    the first actual tool call so server startup is near-instant.
+
+    Kept as a module-level callable (not a private `_route`) so unit tests
+    that `patch("tradingagents.dataflows.mcp_server.route_to_vendor", ...)`
+    continue to work — the patch shadows this proxy and the real interface
+    module never loads under test.
+    """
+    from tradingagents.dataflows.interface import route_to_vendor as _impl
+
+    return _impl(method, *args, **kwargs)
 
 
 # Pre-declared tool names so tests can lock the exposed surface without

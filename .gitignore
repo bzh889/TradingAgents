@@ -218,3 +218,4 @@ __marimo__/
 # Cache
 **/data_cache/
 .ai-global-os-version
+tests/dogfood/*.txt

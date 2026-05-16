@@ -58,6 +58,7 @@ class TradingAgentsGraph:
         config: Dict[str, Any] = None,
         callbacks: Optional[List] = None,
         executor: "str | NodeExecutor" = "api",
+        mcp_config: Optional[str] = None,
     ):
         """Initialize the trading agents graph and components.
 
@@ -74,7 +75,7 @@ class TradingAgentsGraph:
         self.debug = debug
         self.config = config or DEFAULT_CONFIG
         self.callbacks = callbacks or []
-        self.executor = resolve_executor(executor)
+        self.executor = resolve_executor(executor, mcp_config=mcp_config)
 
         # Update the interface's config
         set_config(self.config)
