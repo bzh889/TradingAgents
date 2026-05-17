@@ -219,3 +219,11 @@ __marimo__/
 **/data_cache/
 .ai-global-os-version
 tests/dogfood/*.txt
+
+# AI Global OS — opsx subcommand files are user-level tooling, not project repo
+.claude/commands/opsx/
+
+# Ad-hoc / generated analysis artifacts
+analyze_*.py
+*_TradingAgents_Report.html
+*_Report.html
