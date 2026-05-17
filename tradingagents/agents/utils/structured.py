@@ -33,7 +33,14 @@ def bind_structured(llm: Any, schema: type[T], agent_name: str) -> Optional[Any]
 
     Logs a warning when the binding fails so the user understands the agent
     will use free-text generation for every call instead of one-shot fallback.
+
+    `llm is None` is the CLI-executor-mode contract (claude-code/codex/gemini
+    bypass spec._callable so the parent LLM is unused); return None silently
+    instead of emitting a warning that confuses the user — the noise was a
+    real dogfood finding.
     """
+    if llm is None:
+        return None
     try:
         return llm.with_structured_output(schema)
     except (NotImplementedError, AttributeError) as exc:

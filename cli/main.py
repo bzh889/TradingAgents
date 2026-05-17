@@ -1331,7 +1331,7 @@ def run_analysis(checkpoint: bool = False, executor: Optional[str] = None):
     if cost_tracker:
         total_cost = sum(cost_tracker)
         console.print(
-            f"[dim]Executor [{executor}] reported per-node cost: "
+            f"[dim]Executor `{executor}` reported per-node cost: "
             f"total ${total_cost:.4f} across {len(cost_tracker)} nodes "
             f"(subscription users: this is the equivalent pay-per-token cost; "
             f"your actual subscription quota usage is separate).[/dim]"

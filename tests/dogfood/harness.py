@@ -43,12 +43,12 @@ def run_selector_path(
     executor="claude-code",
     ticker="SPY",
     analysis_date=None,
-    analyst_index=0,
+    analyst_indices=(0,),  # tuple of indices to TOGGLE in checkbox order
     depth_index=0,
     provider_index=0,
     shallow_model_index=0,
     deep_model_index=0,
-    save_report=False,
+    portfolio_context="",
     display_report=False,
     transcript_path=None,
     timeout_seconds=600,
@@ -56,42 +56,55 @@ def run_selector_path(
     if analysis_date is None:
         analysis_date = datetime.now().strftime("%Y-%m-%d")
 
+    cli_mode = executor != "api"
+
     DOWN = "\x1b[B"
     ENTER = "\r"
     SPACE = " "
 
-    # Step 1: execution mode
+    keys_parts = []
+
+    # Step 1: execution mode (questionary.select)
     exec_choices = ["api", "claude-code", "codex", "gemini"]
     exec_idx = exec_choices.index(executor)
-    keys_parts = []
     keys_parts.append(DOWN * exec_idx + ENTER)
 
-    # Step 3: output language (English = first)
+    # Step 3: output language (questionary.select, English = first)
     keys_parts.append(ENTER)
 
-    # Step 4: analysts checkbox
-    if analyst_index == 0:
-        keys_parts.append(SPACE + ENTER)
-    else:
-        keys_parts.append(DOWN * analyst_index + SPACE + ENTER)
+    # Step 4: analysts checkbox — toggle each desired index in order,
+    # cursor starts at 0 and moves DOWN to each target before toggling.
+    cursor = 0
+    for idx in analyst_indices:
+        diff = idx - cursor
+        if diff > 0:
+            keys_parts.append(DOWN * diff)
+        keys_parts.append(SPACE)
+        cursor = idx
+    keys_parts.append(ENTER)
 
-    # Step 5: research depth
+    # Step 5: research depth (questionary.select)
     keys_parts.append(DOWN * depth_index + ENTER)
 
-    # Step 6: LLM provider
-    keys_parts.append(DOWN * provider_index + ENTER)
+    # Steps 6/7/8: provider + models + effort. New CLI mode SKIPS these
+    # entirely. API mode still asks. Keep the old keystrokes only for API mode.
+    if not cli_mode:
+        keys_parts.append(DOWN * provider_index + ENTER)
+        keys_parts.append(DOWN * shallow_model_index + ENTER)
+        keys_parts.append(DOWN * deep_model_index + ENTER)
+        provider_names = [
+            "openai", "google", "anthropic", "xai", "deepseek",
+            "deepseek", "qwen", "glm", "openrouter", "azure", "ollama",
+        ]
+        selected_provider = provider_names[provider_index]
+        if selected_provider in ("google", "openai", "anthropic"):
+            keys_parts.append(ENTER)
 
-    # Step 7a/7b: shallow + deep model
-    keys_parts.append(DOWN * shallow_model_index + ENTER)
-    keys_parts.append(DOWN * deep_model_index + ENTER)
-
-    # Step 8: provider-specific thinking config (only for some)
-    provider_names = [
-        "openai", "google", "anthropic", "xai", "deepseek",
-        "deepseek", "qwen", "glm", "openrouter", "azure", "ollama",
-    ]
-    selected_provider = provider_names[provider_index]
-    if selected_provider in ("google", "openai", "anthropic"):
+    # Post-run: display_report questionary.confirm (default No).
+    # ENTER alone confirms default (No). Press "y" + ENTER to display.
+    if display_report:
+        keys_parts.append("y" + ENTER)
+    else:
         keys_parts.append(ENTER)
 
     keystrokes = "".join(keys_parts)
@@ -109,15 +122,17 @@ def run_selector_path(
     # parent process also need not see a fake key.
     os.environ.setdefault("GOOGLE_API_KEY", "dogfood-dummy")
 
-    typer_input_parts = [
-        f"{ticker}\n",
-        f"{analysis_date}\n",
-        f"{'Y' if save_report else 'N'}\n",
-    ]
-    if save_report:
-        typer_input_parts.append(str(ROOT / "reports" / f"{ticker}_dogfood") + "\n")
-    typer_input_parts.append(f"{'Y' if display_report else 'N'}\n")
-    typer_input = "".join(typer_input_parts)
+    # typer.prompt feeds (read from sys.stdin pipe):
+    #   1. ticker
+    #   2. analysis_date
+    #   3. portfolio_context (Step 3b — empty line skips)
+    # NOTE: the old save-report / save-path prompts are GONE in the new UX;
+    # the consolidated report auto-saves to results_dir.
+    typer_input = (
+        f"{ticker}\n"
+        f"{analysis_date}\n"
+        f"{portfolio_context}\n"
+    )
 
     from prompt_toolkit.application import create_app_session
     from prompt_toolkit.input import create_pipe_input
@@ -186,7 +201,7 @@ def run_selector_path(
         Path(transcript_path).write_text(
             f"=== DOGFOOD RUN {datetime.now().isoformat()} ===\n"
             f"executor={executor} ticker={ticker} date={analysis_date}\n"
-            f"analyst_index={analyst_index} depth_index={depth_index} "
+            f"analyst_indices={analyst_indices} depth_index={depth_index} "
             f"provider_index={provider_index}\n"
             f"--- KEYSTROKES (repr) ---\n{keystrokes!r}\n"
             f"--- TYPER INPUT ---\n{typer_input}\n"
@@ -210,11 +225,17 @@ if __name__ == "__main__":
     parser.add_argument("--executor", default="claude-code")
     parser.add_argument("--ticker", default="SPY")
     parser.add_argument("--date", default=None)
-    parser.add_argument("--analyst", type=int, default=0)
+    parser.add_argument(
+        "--analysts",
+        default="0",
+        help="Comma-separated indices into Step 4 checkbox order (market=0, social=1, news=2, fundamentals=3). Default '0' = market only.",
+    )
     parser.add_argument("--depth", type=int, default=0)
     parser.add_argument("--provider", type=int, default=0)
     parser.add_argument("--shallow-model", type=int, default=0)
     parser.add_argument("--deep-model", type=int, default=0)
+    parser.add_argument("--portfolio-context", default="")
+    parser.add_argument("--display", action="store_true", help="Display full report after run")
     parser.add_argument("--timeout", type=int, default=600)
     parser.add_argument(
         "--transcript",
@@ -222,15 +243,18 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
+    analyst_indices = tuple(int(x) for x in args.analysts.split(",") if x.strip())
     res = run_selector_path(
         executor=args.executor,
         ticker=args.ticker,
         analysis_date=args.date,
-        analyst_index=args.analyst,
+        analyst_indices=analyst_indices,
         depth_index=args.depth,
         provider_index=args.provider,
         shallow_model_index=args.shallow_model,
         deep_model_index=args.deep_model,
+        portfolio_context=args.portfolio_context,
+        display_report=args.display,
         timeout_seconds=args.timeout,
         transcript_path=Path(args.transcript),
     )
