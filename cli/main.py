@@ -1324,10 +1324,12 @@ def run_analysis(checkpoint: bool = False, executor: Optional[str] = None):
             f"{report_dir.resolve()}"
         )
 
-    # Cost summary for CLI executors — ClaudeCodeExecutor / CodexExecutor /
-    # GeminiExecutor track cost_usd per node via _wrap_node_through_executor's
-    # cost_tracker side-channel on graph_setup.
+    # Cost + model-usage summary for CLI executors. cost_tracker collects
+    # `cost_usd` per node; model_usage_tracker collects the modelUsage dict
+    # claude --print returns per invocation (Opus 4.7 vs Haiku 4.5 split).
     cost_tracker = getattr(graph.graph_setup, "cost_tracker", None) or []
+    model_usage_tracker = getattr(graph.graph_setup, "model_usage_tracker", None) or []
+
     if cost_tracker:
         total_cost = sum(cost_tracker)
         console.print(
@@ -1336,6 +1338,56 @@ def run_analysis(checkpoint: bool = False, executor: Optional[str] = None):
             f"(subscription users: this is the equivalent pay-per-token cost; "
             f"your actual subscription quota usage is separate).[/dim]"
         )
+
+        # Aggregate model usage across all nodes so the user sees the actual
+        # Opus 4.7 vs Haiku 4.5 split that drove the cost number.
+        model_totals: dict = {}
+        for entry in model_usage_tracker:
+            for model_name, stats in (entry.get("models") or {}).items():
+                t = model_totals.setdefault(
+                    model_name,
+                    {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "cost": 0.0},
+                )
+                t["input"] += stats.get("inputTokens", 0)
+                t["output"] += stats.get("outputTokens", 0)
+                t["cache_read"] += stats.get("cacheReadInputTokens", 0)
+                t["cache_write"] += stats.get("cacheCreationInputTokens", 0)
+                t["cost"] += stats.get("costUSD", 0.0)
+
+        if model_totals:
+            console.print("[dim]Model breakdown (per-model totals across all nodes):[/dim]")
+            for model_name, t in sorted(model_totals.items(), key=lambda x: -x[1]["cost"]):
+                console.print(
+                    f"  [dim]{model_name}: in={t['input']:,} / out={t['output']:,} "
+                    f"/ cache_r={t['cache_read']:,} / cache_w={t['cache_write']:,} "
+                    f"/ ${t['cost']:.4f}[/dim]"
+                )
+
+    # Persist executor metadata so the HTML renderer (cli/render_report.py)
+    # can show the same breakdown without re-running the analysis.
+    if cost_tracker or model_usage_tracker:
+        import json
+        meta_path = results_dir / "executor_meta.json"
+        try:
+            meta_path.write_text(
+                json.dumps(
+                    {
+                        "ticker": selections["ticker"],
+                        "analysis_date": selections["analysis_date"],
+                        "executor": executor,
+                        "elapsed_seconds": int(time.time() - start_time),
+                        "total_cost_usd": round(sum(cost_tracker), 6) if cost_tracker else None,
+                        "n_nodes": len(cost_tracker),
+                        "per_node_costs": cost_tracker,
+                        "model_usage_per_node": model_usage_tracker,
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+        except Exception as e:  # noqa: BLE001
+            console.print(f"[red]Failed to write executor_meta.json: {e}[/red]")
 
     # Use questionary.confirm so a typo cannot silently drop the action.
     import questionary

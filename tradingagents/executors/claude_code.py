@@ -308,6 +308,14 @@ class ClaudeCodeExecutor:
                 raw_error=result_text or stderr_text,
             )
 
+        # Per-node model usage breakdown emitted by `claude --print
+        # --output-format stream-json` — dict[model_name -> {inputTokens,
+        # outputTokens, cacheReadInputTokens, cacheCreationInputTokens,
+        # costUSD, contextWindow, maxOutputTokens}]. Surfaced so the CLI
+        # can aggregate "which model did how much work" across the 22 nodes.
+        model_usage = result_event.get("modelUsage") or {}
+        duration_ms = result_event.get("duration_ms")
+
         # Structured path: an MCP submit_* tool call became the decision.
         structured_delta = _structured_state_delta(tool_calls, node_name)
         if structured_delta is not None:
@@ -320,6 +328,8 @@ class ClaudeCodeExecutor:
                     "structured": True,
                     "session_id": result_event.get("session_id"),
                     "cost_usd": result_event.get("total_cost_usd"),
+                    "model_usage": model_usage,
+                    "duration_ms": duration_ms,
                 },
             )
 
@@ -337,6 +347,8 @@ class ClaudeCodeExecutor:
                 "structured": False,
                 "session_id": result_event.get("session_id"),
                 "cost_usd": result_event.get("total_cost_usd"),
+                "model_usage": model_usage,
+                "duration_ms": duration_ms,
             },
         )
 

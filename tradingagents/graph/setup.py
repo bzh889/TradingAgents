@@ -16,6 +16,7 @@ def _wrap_node_through_executor(
     node_fn: Callable[[Dict[str, Any]], Dict[str, Any]],
     agent_role: str,
     cost_tracker: Optional[list] = None,
+    model_usage_tracker: Optional[list] = None,
 ) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
     """Wrap a LangGraph-native node fn so it dispatches through `executor.run_node`.
 
@@ -37,10 +38,23 @@ def _wrap_node_through_executor(
 
     def wrapped(state: Dict[str, Any]) -> Dict[str, Any]:
         result = executor.run_node(agent_role, state, spec)
+        meta = result.executor_metadata or {}
         if cost_tracker is not None:
-            cost = (result.executor_metadata or {}).get("cost_usd")
+            cost = meta.get("cost_usd")
             if cost is not None:
                 cost_tracker.append(float(cost))
+        if model_usage_tracker is not None:
+            usage = meta.get("model_usage")
+            if usage:
+                model_usage_tracker.append(
+                    {
+                        "agent_role": agent_role,
+                        "session_id": meta.get("session_id"),
+                        "duration_ms": meta.get("duration_ms"),
+                        "cost_usd": meta.get("cost_usd"),
+                        "models": usage,
+                    }
+                )
         return result.state_delta
 
     wrapped.__name__ = f"{agent_role}_via_{executor.name}"
@@ -75,6 +89,10 @@ class GraphSetup:
         # run for the "total cost" line. API executor never sets cost_usd so
         # this stays empty in API mode.
         self.cost_tracker: list[float] = []
+        # Per-node modelUsage breakdown emitted by ClaudeCodeExecutor; lets the
+        # CLI / HTML render show which model (Opus 4.7 vs Haiku 4.5) did how
+        # much work across the 22-node pipeline. Empty in API mode.
+        self.model_usage_tracker: list[dict] = []
 
     def setup_graph(
         self, selected_analysts=["market", "social", "news", "fundamentals"]
@@ -101,7 +119,11 @@ class GraphSetup:
         # works without touching tradingagents/agents/**. See design §D9.
         def _wrap(node_fn, agent_role):
             return _wrap_node_through_executor(
-                self.executor, node_fn, agent_role, cost_tracker=self.cost_tracker
+                self.executor,
+                node_fn,
+                agent_role,
+                cost_tracker=self.cost_tracker,
+                model_usage_tracker=self.model_usage_tracker,
             )
 
         if "market" in selected_analysts:
