@@ -255,7 +255,14 @@ def format_tokens(n):
     return str(n)
 
 
-def update_display(layout, spinner_text=None, stats_handler=None, start_time=None):
+def update_display(
+    layout,
+    spinner_text=None,
+    stats_handler=None,
+    start_time=None,
+    cost_tracker=None,
+    executor_name=None,
+):
     # Header with welcome message
     layout["header"].update(
         Panel(
@@ -435,7 +442,17 @@ def update_display(layout, spinner_text=None, stats_handler=None, start_time=Non
     stats_parts = [f"Agents: {agents_completed}/{agents_total}"]
 
     # LLM and tool stats from callback handler
-    if stats_handler:
+    # In CLI executor mode, langchain callbacks fire inside the subprocess so
+    # the parent-process StatsCallbackHandler stays at 0 \u2014 show cost-from-
+    # executor_metadata + executor name instead of misleading 0/0/--.
+    cli_mode = executor_name and executor_name != "api"
+    if cli_mode:
+        stats_parts.append(f"Mode: {executor_name}")
+        if cost_tracker is not None and cost_tracker:
+            total_cost = sum(cost_tracker)
+            stats_parts.append(f"Cost: ${total_cost:.3f}")
+            stats_parts.append(f"Nodes: {len(cost_tracker)}")
+    elif stats_handler:
         stats = stats_handler.get_stats()
         stats_parts.append(f"LLM: {stats['llm_calls']}")
         stats_parts.append(f"Tools: {stats['tool_calls']}")
@@ -462,8 +479,16 @@ def update_display(layout, spinner_text=None, stats_handler=None, start_time=Non
     layout["footer"].update(Panel(stats_table, border_style="grey50"))
 
 
-def get_user_selections():
-    """Get all user selections before starting the analysis display."""
+def get_user_selections(executor: str = "api"):
+    """Get all user selections before starting the analysis display.
+
+    When `executor` is a CLI mode (claude-code / codex / gemini), the
+    LLM-provider / model / effort prompts (Steps 6/7/8) are skipped because
+    the subscription CLI handles its own auth + model selection. Returns the
+    same dict shape with provider-related keys set to None (downstream code
+    in run_analysis() treats `llm_provider is None` as "skip LLM build").
+    """
+    cli_mode = executor != "api"
     # Display ASCII art welcome message
     with open(Path(__file__).parent / "static" / "welcome.txt", "r", encoding="utf-8") as f:
         welcome_ascii = f.read()
@@ -531,6 +556,25 @@ def get_user_selections():
     )
     output_language = ask_output_language()
 
+    # Step 3.5 (optional): portfolio context. Lets the trader + PM tailor the
+    # decision to the user's actual position. Skipped if empty (Enter past the
+    # prompt). Threaded through propagator.create_initial_state(past_context=…)
+    # so it lands in state["past_context"] which CLI executors already serialise
+    # into their subprocess prompt.
+    console.print(
+        create_question_box(
+            "Step 3b (optional): Portfolio Context",
+            "If you already hold this ticker, enter a one-line context — e.g. "
+            "'long 100 shares @ $200 avg, 12-month horizon, tolerate 15% drawdown'. "
+            "Leave blank to skip (analysis runs decoupled from your actual position).",
+        )
+    )
+    portfolio_context = typer.prompt(
+        "Portfolio context",
+        default="",
+        show_default=False,
+    ).strip()
+
     # Step 4: Select analysts
     console.print(
         create_question_box(
@@ -550,66 +594,85 @@ def get_user_selections():
     )
     selected_research_depth = select_research_depth()
 
-    # Step 6: LLM Provider
-    console.print(
-        create_question_box(
-            "Step 6: LLM Provider", "Select your LLM provider"
+    # Steps 6/7/8: LLM provider + models + effort.
+    # CLI executor mode (claude-code / codex / gemini) skips these because the
+    # subscription CLI handles its own model selection + auth via keychain
+    # OAuth. We just record the executor name as the "provider" marker so
+    # downstream code knows to skip langchain LLM construction.
+    if cli_mode:
+        console.print(
+            f"[dim]Steps 6-8 skipped: executor={executor} uses its own "
+            f"subscription CLI (login + model + reasoning configured there).[/dim]"
         )
-    )
-    selected_llm_provider, backend_url = select_llm_provider()
-
-    # Step 7: Thinking agents
-    console.print(
-        create_question_box(
-            "Step 7: Thinking Agents", "Select your thinking agents for analysis"
-        )
-    )
-    selected_shallow_thinker = select_shallow_thinking_agent(selected_llm_provider, backend_url)
-    selected_deep_thinker = select_deep_thinking_agent(selected_llm_provider, backend_url)
-
-    # Step 8: Provider-specific thinking configuration
-    thinking_level = None
-    reasoning_effort = None
-    anthropic_effort = None
-
-    provider_lower = selected_llm_provider.lower()
-    if provider_lower == "google":
+        selected_llm_provider = None
+        backend_url = None
+        selected_shallow_thinker = None
+        selected_deep_thinker = None
+        thinking_level = None
+        reasoning_effort = None
+        anthropic_effort = None
+    else:
+        # Step 6: LLM Provider
         console.print(
             create_question_box(
-                "Step 8: Thinking Mode",
-                "Configure Gemini thinking mode"
+                "Step 6: LLM Provider", "Select your LLM provider"
             )
         )
-        thinking_level = ask_gemini_thinking_config()
-    elif provider_lower == "openai":
+        selected_llm_provider, backend_url = select_llm_provider()
+
+        # Step 7: Thinking agents
         console.print(
             create_question_box(
-                "Step 8: Reasoning Effort",
-                "Configure OpenAI reasoning effort level"
+                "Step 7: Thinking Agents", "Select your thinking agents for analysis"
             )
         )
-        reasoning_effort = ask_openai_reasoning_effort()
-    elif provider_lower == "anthropic":
-        console.print(
-            create_question_box(
-                "Step 8: Effort Level",
-                "Configure Claude effort level"
+        selected_shallow_thinker = select_shallow_thinking_agent(selected_llm_provider, backend_url)
+        selected_deep_thinker = select_deep_thinking_agent(selected_llm_provider, backend_url)
+
+        # Step 8: Provider-specific thinking configuration
+        thinking_level = None
+        reasoning_effort = None
+        anthropic_effort = None
+
+        provider_lower = selected_llm_provider.lower()
+        if provider_lower == "google":
+            console.print(
+                create_question_box(
+                    "Step 8: Thinking Mode",
+                    "Configure Gemini thinking mode"
+                )
             )
-        )
-        anthropic_effort = ask_anthropic_effort()
+            thinking_level = ask_gemini_thinking_config()
+        elif provider_lower == "openai":
+            console.print(
+                create_question_box(
+                    "Step 8: Reasoning Effort",
+                    "Configure OpenAI reasoning effort level"
+                )
+            )
+            reasoning_effort = ask_openai_reasoning_effort()
+        elif provider_lower == "anthropic":
+            console.print(
+                create_question_box(
+                    "Step 8: Effort Level",
+                    "Configure Claude effort level"
+                )
+            )
+            anthropic_effort = ask_anthropic_effort()
 
     return {
         "ticker": selected_ticker,
         "analysis_date": analysis_date,
         "analysts": selected_analysts,
         "research_depth": selected_research_depth,
-        "llm_provider": selected_llm_provider.lower(),
+        "llm_provider": (selected_llm_provider.lower() if selected_llm_provider else None),
         "backend_url": backend_url,
         "shallow_thinker": selected_shallow_thinker,
         "deep_thinker": selected_deep_thinker,
         "google_thinking_level": thinking_level,
         "openai_reasoning_effort": reasoning_effort,
         "anthropic_effort": anthropic_effort,
+        "portfolio_context": portfolio_context,
         "output_language": output_language,
     }
 
@@ -929,13 +992,27 @@ def format_tool_args(args, max_length=80) -> str:
     return result
 
 def run_analysis(checkpoint: bool = False, executor: Optional[str] = None):
+    # Silence langgraph-pending-deprecation warnings that leak to stdout and
+    # clutter the rich Live() display.
+    import warnings
+    warnings.filterwarnings(
+        "ignore",
+        category=DeprecationWarning,
+        module=r"langgraph\.checkpoint\.serde\..*",
+    )
+    try:
+        from langchain_core._api import LangChainPendingDeprecationWarning
+        warnings.filterwarnings("ignore", category=LangChainPendingDeprecationWarning)
+    except Exception:  # noqa: BLE001
+        pass
+
     # Step 1 (new): pick execution mode. CLI flag --executor pre-empts the prompt;
-    # otherwise we show the questionary selector. Phase 1 ships 'api' only.
+    # otherwise we show the questionary selector.
     if executor is None:
         executor = select_execution_mode()
 
-    # First get all user selections
-    selections = get_user_selections()
+    # First get all user selections (CLI executor mode skips Steps 6/7/8)
+    selections = get_user_selections(executor=executor)
 
     # Create config with selected research depth
     config = DEFAULT_CONFIG.copy()
@@ -944,7 +1021,11 @@ def run_analysis(checkpoint: bool = False, executor: Optional[str] = None):
     config["quick_think_llm"] = selections["shallow_thinker"]
     config["deep_think_llm"] = selections["deep_thinker"]
     config["backend_url"] = selections["backend_url"]
-    config["llm_provider"] = selections["llm_provider"].lower()
+    # CLI executor mode leaves llm_provider unset (subscription CLI is the model);
+    # API mode requires it lowered.
+    config["llm_provider"] = (
+        selections["llm_provider"].lower() if selections["llm_provider"] else None
+    )
     # Provider-specific thinking configuration
     config["google_thinking_level"] = selections.get("google_thinking_level")
     config["openai_reasoning_effort"] = selections.get("openai_reasoning_effort")
@@ -972,6 +1053,29 @@ def run_analysis(checkpoint: bool = False, executor: Optional[str] = None):
         console.print(
             f"[dim]MCP config written for CLI executor: {mcp_config_path}[/dim]"
         )
+
+    # Execution plan preview — fixed graph topology is 4 analysts (selected) +
+    # 3 researchers (bull/bear/research_manager) + trader + 3 risk debators +
+    # portfolio_manager. Multi-round debates inflate per-node count by depth.
+    n_analysts = len(selected_analyst_keys)
+    debate_rounds = selections["research_depth"]
+    n_research = 2 * debate_rounds + 1  # bull/bear alternating + final manager
+    n_risk = 3 * debate_rounds + 1  # aggressive/conservative/neutral round-robin + PM
+    n_nodes = n_analysts + n_research + 1 + n_risk  # +1 for trader
+    per_node_min = {"api": 0.3, "claude-code": 2.0, "codex": 2.5, "gemini": 2.5}.get(executor, 1.0)
+    eta_min = n_nodes * per_node_min
+
+    console.print()
+    console.print(
+        f"[bold cyan]Execution plan[/bold cyan]: executor=[bold]{executor}[/bold] "
+        f"| analysts={n_analysts} debate_rounds={debate_rounds} "
+        f"| total_nodes≈{n_nodes} | est_time≈{eta_min:.0f} min"
+    )
+    if not checkpoint and executor != "api":
+        console.print(
+            "[dim]Tip: pass [bold]--checkpoint[/bold] so a crashed run can resume.[/dim]"
+        )
+    console.print()
 
     # Initialize the graph with callbacks bound to LLMs
     graph = TradingAgentsGraph(
@@ -1042,7 +1146,7 @@ def run_analysis(checkpoint: bool = False, executor: Optional[str] = None):
 
     with Live(layout, refresh_per_second=4) as live:
         # Initial display
-        update_display(layout, stats_handler=stats_handler, start_time=start_time)
+        update_display(layout, stats_handler=stats_handler, start_time=start_time, cost_tracker=graph.graph_setup.cost_tracker, executor_name=executor)
 
         # Add initial messages
         message_buffer.add_message("System", f"Selected ticker: {selections['ticker']}")
@@ -1053,22 +1157,28 @@ def run_analysis(checkpoint: bool = False, executor: Optional[str] = None):
             "System",
             f"Selected analysts: {', '.join(analyst.value for analyst in selections['analysts'])}",
         )
-        update_display(layout, stats_handler=stats_handler, start_time=start_time)
+        update_display(layout, stats_handler=stats_handler, start_time=start_time, cost_tracker=graph.graph_setup.cost_tracker, executor_name=executor)
 
         # Update agent status to in_progress for the first analyst
         first_analyst = f"{selections['analysts'][0].value.capitalize()} Analyst"
         message_buffer.update_agent_status(first_analyst, "in_progress")
-        update_display(layout, stats_handler=stats_handler, start_time=start_time)
+        update_display(layout, stats_handler=stats_handler, start_time=start_time, cost_tracker=graph.graph_setup.cost_tracker, executor_name=executor)
 
         # Create spinner text
         spinner_text = (
             f"Analyzing {selections['ticker']} on {selections['analysis_date']}..."
         )
-        update_display(layout, spinner_text, stats_handler=stats_handler, start_time=start_time)
+        update_display(layout, spinner_text, stats_handler=stats_handler, start_time=start_time, cost_tracker=graph.graph_setup.cost_tracker, executor_name=executor)
 
-        # Initialize state and get graph args with callbacks
+        # Initialize state and get graph args with callbacks.
+        # past_context carries the optional portfolio-context line entered in
+        # Step 3b so the trader / PM can tailor the recommendation to the
+        # user's actual position. Empty string falls through cleanly — agents
+        # ignore it.
         init_agent_state = graph.propagator.create_initial_state(
-            selections["ticker"], selections["analysis_date"]
+            selections["ticker"],
+            selections["analysis_date"],
+            past_context=selections.get("portfolio_context", "") or "",
         )
         # Pass callbacks to graph config for tool execution tracking
         # (LLM tracking is handled separately via LLM constructor)
@@ -1171,7 +1281,7 @@ def run_analysis(checkpoint: bool = False, executor: Optional[str] = None):
                         message_buffer.update_agent_status("Portfolio Manager", "completed")
 
             # Update the display
-            update_display(layout, stats_handler=stats_handler, start_time=start_time)
+            update_display(layout, stats_handler=stats_handler, start_time=start_time, cost_tracker=graph.graph_setup.cost_tracker, executor_name=executor)
 
             trace.append(chunk)
 
@@ -1192,31 +1302,48 @@ def run_analysis(checkpoint: bool = False, executor: Optional[str] = None):
             if section in final_state:
                 message_buffer.update_report_section(section, final_state[section])
 
-        update_display(layout, stats_handler=stats_handler, start_time=start_time)
+        update_display(layout, stats_handler=stats_handler, start_time=start_time, cost_tracker=graph.graph_setup.cost_tracker, executor_name=executor)
 
-    # Post-analysis prompts (outside Live context for clean interaction)
+    # Post-analysis: ALWAYS auto-save the consolidated report alongside the
+    # per-section markdown that streamed into results_dir during the run.
+    # The previous free-text "Save report? [Y]" prompt accepted any non-empty
+    # string and silently dropped the save on typos — a 30-min run could
+    # evaporate from one keystroke mistake.
     console.print("\n[bold cyan]Analysis Complete![/bold cyan]\n")
 
-    # Prompt to save report
-    save_choice = typer.prompt("Save report?", default="Y").strip().upper()
-    if save_choice in ("Y", "YES", ""):
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        default_path = Path.cwd() / "reports" / f"{selections['ticker']}_{timestamp}"
-        save_path_str = typer.prompt(
-            "Save path (press Enter for default)",
-            default=str(default_path)
-        ).strip()
-        save_path = Path(save_path_str)
-        try:
-            report_file = save_report_to_disk(final_state, selections["ticker"], save_path)
-            console.print(f"\n[green]✓ Report saved to:[/green] {save_path.resolve()}")
-            console.print(f"  [dim]Complete report:[/dim] {report_file.name}")
-        except Exception as e:
-            console.print(f"[red]Error saving report: {e}[/red]")
+    save_path = results_dir  # same dir as the per-section markdown
+    try:
+        report_file = save_report_to_disk(final_state, selections["ticker"], save_path)
+        console.print(
+            f"[green]✓ Complete report auto-saved:[/green] {report_file.resolve()}"
+        )
+    except Exception as e:  # noqa: BLE001
+        console.print(f"[red]Error saving consolidated report: {e}[/red]")
+        console.print(
+            f"[yellow]Per-section markdown is still at:[/yellow] "
+            f"{report_dir.resolve()}"
+        )
 
-    # Prompt to display full report
-    display_choice = typer.prompt("\nDisplay full report on screen?", default="Y").strip().upper()
-    if display_choice in ("Y", "YES", ""):
+    # Cost summary for CLI executors — ClaudeCodeExecutor / CodexExecutor /
+    # GeminiExecutor track cost_usd per node via _wrap_node_through_executor's
+    # cost_tracker side-channel on graph_setup.
+    cost_tracker = getattr(graph.graph_setup, "cost_tracker", None) or []
+    if cost_tracker:
+        total_cost = sum(cost_tracker)
+        console.print(
+            f"[dim]Executor [{executor}] reported per-node cost: "
+            f"total ${total_cost:.4f} across {len(cost_tracker)} nodes "
+            f"(subscription users: this is the equivalent pay-per-token cost; "
+            f"your actual subscription quota usage is separate).[/dim]"
+        )
+
+    # Use questionary.confirm so a typo cannot silently drop the action.
+    import questionary
+    show_now = questionary.confirm(
+        "Display full report on screen?",
+        default=False,
+    ).ask()
+    if show_now:
         display_complete_report(final_state)
 
 

@@ -84,28 +84,41 @@ class TradingAgentsGraph:
         os.makedirs(self.config["data_cache_dir"], exist_ok=True)
         os.makedirs(self.config["results_dir"], exist_ok=True)
 
-        # Initialize LLMs with provider-specific thinking configuration
-        llm_kwargs = self._get_provider_kwargs()
+        # Initialize LLMs only for API-mode execution. CLI executors
+        # (claude-code / codex / gemini) handle their own LLM via subscription
+        # CLI and never invoke `self.deep_thinking_llm` / `self.quick_thinking_llm`
+        # because run_node bypasses the spec._callable (which is what bakes the
+        # LLM into the agent closure). Building langchain clients here would
+        # require an unused-LLM-provider API key from subscription users — a
+        # real friction point we hit in dogfood. Skip when executor != "api".
+        if self.executor.name == "api":
+            llm_kwargs = self._get_provider_kwargs()
+            if self.callbacks:
+                llm_kwargs["callbacks"] = self.callbacks
 
-        # Add callbacks to kwargs if provided (passed to LLM constructor)
-        if self.callbacks:
-            llm_kwargs["callbacks"] = self.callbacks
+            deep_client = create_llm_client(
+                provider=self.config["llm_provider"],
+                model=self.config["deep_think_llm"],
+                base_url=self.config.get("backend_url"),
+                **llm_kwargs,
+            )
+            quick_client = create_llm_client(
+                provider=self.config["llm_provider"],
+                model=self.config["quick_think_llm"],
+                base_url=self.config.get("backend_url"),
+                **llm_kwargs,
+            )
 
-        deep_client = create_llm_client(
-            provider=self.config["llm_provider"],
-            model=self.config["deep_think_llm"],
-            base_url=self.config.get("backend_url"),
-            **llm_kwargs,
-        )
-        quick_client = create_llm_client(
-            provider=self.config["llm_provider"],
-            model=self.config["quick_think_llm"],
-            base_url=self.config.get("backend_url"),
-            **llm_kwargs,
-        )
-
-        self.deep_thinking_llm = deep_client.get_llm()
-        self.quick_thinking_llm = quick_client.get_llm()
+            self.deep_thinking_llm = deep_client.get_llm()
+            self.quick_thinking_llm = quick_client.get_llm()
+        else:
+            # CLI executor mode — no LLM clients. Components downstream that
+            # accept a quick_thinking_llm argument (Reflector, SignalProcessor)
+            # already handle None (SignalProcessor is deterministic; Reflector
+            # is only invoked in the Phase B outcome-known path that is not
+            # part of the analyze command).
+            self.deep_thinking_llm = None
+            self.quick_thinking_llm = None
         
         self.memory_log = TradingMemoryLog(self.config)
 

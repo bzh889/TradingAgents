@@ -15,6 +15,7 @@ def _wrap_node_through_executor(
     executor: NodeExecutor,
     node_fn: Callable[[Dict[str, Any]], Dict[str, Any]],
     agent_role: str,
+    cost_tracker: Optional[list] = None,
 ) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
     """Wrap a LangGraph-native node fn so it dispatches through `executor.run_node`.
 
@@ -24,12 +25,22 @@ def _wrap_node_through_executor(
     the same `(state) -> dict` LangGraph signature but the CLI executor ignores
     `_callable` and builds a subprocess prompt from agent_role + spec metadata.
 
+    `cost_tracker` is an optional list the caller passes in; every node's
+    `executor_metadata.cost_usd` is appended so the CLI surface can sum the
+    total at end-of-run. langgraph state has no native cost-accumulation
+    reducer, so we use this side channel rather than threading it through
+    state.
+
     See design §D9.
     """
     spec = NodeSpec(agent_role=agent_role, _callable=node_fn)
 
     def wrapped(state: Dict[str, Any]) -> Dict[str, Any]:
         result = executor.run_node(agent_role, state, spec)
+        if cost_tracker is not None:
+            cost = (result.executor_metadata or {}).get("cost_usd")
+            if cost is not None:
+                cost_tracker.append(float(cost))
         return result.state_delta
 
     wrapped.__name__ = f"{agent_role}_via_{executor.name}"
@@ -59,6 +70,11 @@ class GraphSetup:
         self.tool_nodes = tool_nodes
         self.conditional_logic = conditional_logic
         self.executor = executor if executor is not None else APIExecutor()
+        # Per-node cost reported by CLI executors via executor_metadata.cost_usd.
+        # Appended by _wrap_node_through_executor; CLI surface sums at end of
+        # run for the "total cost" line. API executor never sets cost_usd so
+        # this stays empty in API mode.
+        self.cost_tracker: list[float] = []
 
     def setup_graph(
         self, selected_analysts=["market", "social", "news", "fundamentals"]
@@ -84,7 +100,9 @@ class GraphSetup:
         # each through `self.executor.run_node` so the executor seam (API vs CLI)
         # works without touching tradingagents/agents/**. See design §D9.
         def _wrap(node_fn, agent_role):
-            return _wrap_node_through_executor(self.executor, node_fn, agent_role)
+            return _wrap_node_through_executor(
+                self.executor, node_fn, agent_role, cost_tracker=self.cost_tracker
+            )
 
         if "market" in selected_analysts:
             analyst_nodes["market"] = _wrap(
